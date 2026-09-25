@@ -1474,7 +1474,19 @@
     });
 
     function initDate() {
-      const today = new Date().toISOString().split("T")[0];
+      let today;
+      try {
+        today = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Dubai",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit"
+        }).format(new Date());
+      } catch (err) {
+        console.warn("[TIMEZONE] UAE date formatting failed; using local browser date.", err);
+        today = new Date().toLocaleDateString("en-CA");
+      }
+
       const dateInput = document.getElementById("transaction_date");
       if (dateInput && !dateInput.value) {
         dateInput.value = today;
@@ -1700,7 +1712,11 @@
 
     function enqueueOfflineInvoice(payload) {
       const queue = getOfflineQueue();
-      payload._queue_id = "offline_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+      const uniqueId = (window.crypto && typeof window.crypto.randomUUID === "function")
+        ? window.crypto.randomUUID()
+        : "offline_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+
+      payload._queue_id = uniqueId;
       payload._queued_at = new Date().toISOString();
       queue.push(payload);
       saveOfflineQueue(queue);
@@ -1955,8 +1971,8 @@
 
             if (error) throw error;
           } else {
-            // Simulated insert delay if running in preview
-            await new Promise(r => setTimeout(r, 120));
+            // Never simulate a financial database write. Keep the item queued until a real client is available.
+            throw new Error("Supabase client is unavailable; invoice retained in offline queue.");
           }
           successCount++;
         } catch (err) {
@@ -2076,29 +2092,61 @@
       }
 
       try {
-        if (supabaseClient) {
-          // STRICT MANDATE: BLIND INSERT ONLY (NO SELECT / READ)
-          const { error } = await supabaseClient
-            .from("transactions")
-            .insert([payload]);
-
-          if (error) throw error;
-
-          onSaveSuccess(cleanInvoiceNo, party_name, amountBeforeTax, vatAmount, amountWithTax, false);
-        } else {
-          // If no Supabase configured or demo mode, save to offline queue & notify
+        if (!supabaseClient) {
+          // No database client: store locally and retry later. Never pretend that a cloud write succeeded.
           enqueueOfflineInvoice(payload);
           onSaveSuccess(cleanInvoiceNo, party_name, amountBeforeTax, vatAmount, amountWithTax, true);
+          resetFormPreservingDate();
+          return;
+        }
+
+        // STRICT MANDATE: BLIND INSERT ONLY (NO SELECT / READ)
+        const { error } = await supabaseClient
+          .from("transactions")
+          .insert([payload]);
+
+        if (error) {
+          const status = Number(error?.status || 0);
+          const message = String(error?.message || error?.error || "The server rejected the transaction.");
+
+          // Queue only when the browser received no HTTP response / genuine transport failure.
+          // Do NOT queue 4xx/5xx responses because the server may have processed or rejected the record,
+          // and retrying those responses can create duplicate financial transactions.
+          if (status === 0 || error?.isNetworkError === true) {
+            enqueueOfflineInvoice(payload);
+            onSaveSuccess(cleanInvoiceNo, party_name, amountBeforeTax, vatAmount, amountWithTax, true);
+          } else {
+            console.error("[TRANSACTION] Server rejected insert:", { status, message });
+            showAlert(
+              "Save Failed",
+              "The transaction was not saved. Server response (" + status + "): " + message,
+              "error"
+            );
+          }
+        } else {
+          onSaveSuccess(cleanInvoiceNo, party_name, amountBeforeTax, vatAmount, amountWithTax, false);
         }
 
         resetFormPreservingDate();
 
       } catch (err) {
-        console.warn("Insert failed, fallback to offline queue:", err);
-        // Fallback to offline queue to prevent any data loss!
-        enqueueOfflineInvoice(payload);
-        onSaveSuccess(cleanInvoiceNo, party_name, amountBeforeTax, vatAmount, amountWithTax, true);
-        resetFormPreservingDate();
+        const status = Number(err?.status || 0);
+        const message = String(err?.message || err || "Unknown save error.");
+        const isNetworkError =
+          status === 0 &&
+          (err?.isNetworkError === true ||
+           err instanceof TypeError ||
+           /network|fetch|failed to fetch|load failed|connection/i.test(message));
+
+        if (isNetworkError) {
+          console.warn("[TRANSACTION] Network failure; moving record to offline queue:", err);
+          enqueueOfflineInvoice(payload);
+          onSaveSuccess(cleanInvoiceNo, party_name, amountBeforeTax, vatAmount, amountWithTax, true);
+          resetFormPreservingDate();
+        } else {
+          console.error("[TRANSACTION] Unexpected insert failure; record NOT queued:", err);
+          showAlert("Save Failed", "The transaction was not saved. " + message, "error");
+        }
       } finally {
         setLoading(false);
       }
@@ -2273,12 +2321,26 @@
                   });
                   if (!res.ok) {
                     const errData = await res.json().catch(() => ({ message: res.statusText }));
-                    return { data: null, error: errData };
+                    return {
+                      data: null,
+                      error: {
+                        ...(errData || {}),
+                        status: res.status,
+                        isNetworkError: false
+                      }
+                    };
                   }
                   const data = await res.json();
                   return { data, error: null };
                 } catch (err) {
-                  return { data: null, error: err };
+                  return {
+                    data: null,
+                    error: {
+                      message: String(err?.message || err),
+                      status: 0,
+                      isNetworkError: true
+                    }
+                  };
                 }
               })();
             },
@@ -2411,27 +2473,77 @@
     // ------------------------------------------------------------------------
     // CSP-COMPLIANT AUTOMATIC PROGRAMMATIC EVENT BINDING ENGINE (CQ-08)
     // ------------------------------------------------------------------------
+    function splitHandlerArguments(argsStr) {
+      const args = [];
+      let current = "";
+      let quote = null;
+      let depth = 0;
+
+      for (let i = 0; i < argsStr.length; i++) {
+        const ch = argsStr[i];
+
+        if (quote) {
+          current += ch;
+          if (ch === quote && argsStr[i - 1] !== "\\") {
+            quote = null;
+          }
+          continue;
+        }
+
+        if (ch === "'" || ch === '"' || ch === String.fromCharCode(96)) {
+          quote = ch;
+          current += ch;
+          continue;
+        }
+
+        if (ch === "(" || ch === "[" || ch === "{") {
+          depth++;
+          current += ch;
+          continue;
+        }
+
+        if (ch === ")" || ch === "]" || ch === "}") {
+          depth--;
+          current += ch;
+          continue;
+        }
+
+        if (ch === "," && depth === 0) {
+          args.push(current.trim());
+          current = "";
+          continue;
+        }
+
+        current += ch;
+      }
+
+      if (current.trim()) args.push(current.trim());
+      return args;
+    }
+
     function executeInlineHandler(el, handlerStr, event) {
       if (!handlerStr) return;
+
       const statements = handlerStr.split(';').map(s => s.trim()).filter(Boolean);
-      
+
       for (const statement of statements) {
         if (statement.startsWith('event.stopPropagation()')) {
           event.stopPropagation();
           continue;
         }
+
         if (statement.startsWith('event.preventDefault()')) {
           event.preventDefault();
           continue;
         }
 
-        // Direct element style/class show/hide manipulations
         const toastMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.add\(['"]([^'"]+)['"]\)/);
         if (toastMatch) {
           const targetEl = document.getElementById(toastMatch[1]);
           if (targetEl) targetEl.classList.add(toastMatch[2]);
           continue;
         }
+
         const toastRemoveMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.remove\(['"]([^'"]+)['"]\)/);
         if (toastRemoveMatch) {
           const targetEl = document.getElementById(toastRemoveMatch[1]);
@@ -2439,7 +2551,6 @@
           continue;
         }
 
-        // Click emulation trigger
         const clickMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.click\(\)/);
         if (clickMatch) {
           const targetEl = document.getElementById(clickMatch[1]);
@@ -2447,82 +2558,81 @@
           continue;
         }
 
-        // Function call: functionName(arguments)
         const match = statement.match(/^([a-zA-Z0-9_$]+)\((.*)\)$/);
-        if (match) {
-          const funcName = match[1];
-          const argsStr = match[2].trim();
-          const fn = window[funcName];
-          if (typeof fn === 'function') {
-            const args = [];
-            if (argsStr) {
-              const rawArgs = argsStr.split(',').map(a => a.trim());
-              for (const rawArg of rawArgs) {
-                if (rawArg === 'event') {
-                  args.push(event);
-                } else if (rawArg === 'this') {
-                  args.push(el);
-                } else if (rawArg === 'this.value') {
-                  args.push(el.value);
-                } else if (rawArg === 'this.checked') {
-                  args.push(el.checked);
-                } else if ((rawArg.startsWith("'") && rawArg.endsWith("'")) || (rawArg.startsWith('"') && rawArg.endsWith('"'))) {
-                  args.push(rawArg.slice(1, -1));
-                } else if (rawArg.startsWith(String.fromCharCode(96)) && rawArg.endsWith(String.fromCharCode(96))) {
-                  args.push(rawArg.slice(1, -1)); // simple template string fallback
-                } else {
-                  if (!isNaN(rawArg) && rawArg !== '') {
-                    args.push(Number(rawArg));
-                  } else {
-                    args.push(window[rawArg] !== undefined ? window[rawArg] : rawArg);
-                  }
-                }
-              }
+        if (!match) continue;
+
+        const funcName = match[1];
+        const argsStr = match[2].trim();
+        const fn = window[funcName];
+
+        if (typeof fn !== 'function') {
+          console.warn("[EVENT-BIND] Function window." + funcName + " is not defined.");
+          continue;
+        }
+
+        const args = [];
+        if (argsStr) {
+          for (const rawArg of splitHandlerArguments(argsStr)) {
+            if (rawArg === 'event') {
+              args.push(event);
+            } else if (rawArg === 'this') {
+              args.push(el);
+            } else if (rawArg === 'this.value') {
+              args.push(el.value);
+            } else if (rawArg === 'this.checked') {
+              args.push(el.checked);
+            } else if ((rawArg.startsWith("'") && rawArg.endsWith("'")) || (rawArg.startsWith('"') && rawArg.endsWith('"'))) {
+              args.push(rawArg.slice(1, -1));
+            } else if (rawArg.startsWith(String.fromCharCode(96)) && rawArg.endsWith(String.fromCharCode(96))) {
+              args.push(rawArg.slice(1, -1));
+            } else if (rawArg === 'true' || rawArg === 'false') {
+              args.push(rawArg === 'true');
+            } else if (rawArg === 'null') {
+              args.push(null);
+            } else if (!isNaN(rawArg) && rawArg !== '') {
+              args.push(Number(rawArg));
+            } else {
+              args.push(window[rawArg] !== undefined ? window[rawArg] : rawArg);
             }
-            fn.apply(el, args);
-          } else {
-            console.warn("[EVENT-BIND] Function window." + funcName + " is not defined.");
           }
+        }
+
+        try {
+          const result = fn.apply(el, args);
+          if (result && typeof result.then === "function") {
+            result.catch(err => console.error("[EVENT-BIND] Async handler failed:", err));
+          }
+        } catch (err) {
+          console.error("[EVENT-BIND] Handler failed:", funcName, err);
         }
       }
     }
 
     onReady(() => {
-      console.log("[EVENT-BIND] Initializing programmatic CSP event bindings...");
-      
-      // Bind click handlers (data-onclick)
-      document.querySelectorAll('[data-onclick]').forEach(el => {
-        el.addEventListener('click', (e) => {
-          const handlerStr = el.getAttribute('data-onclick');
-          executeInlineHandler(el, handlerStr, e);
+      console.log("[EVENT-BIND] Initializing delegated programmatic CSP event bindings...");
+
+      const delegatedBindings = [
+        ["click", "data-onclick"],
+        ["submit", "data-onsubmit"],
+        ["change", "data-onchange"],
+        ["input", "data-oninput"]
+      ];
+
+      delegatedBindings.forEach(([eventType, attribute]) => {
+        document.addEventListener(eventType, (event) => {
+          const target = event.target;
+          const candidate = target && target.closest
+            ? target.closest("[" + attribute + "]")
+            : null;
+
+          if (!candidate) return;
+
+          const handlerStr = candidate.getAttribute(attribute);
+          executeInlineHandler(candidate, handlerStr, event);
         });
       });
 
-      // Bind submit handlers (data-onsubmit)
-      document.querySelectorAll('[data-onsubmit]').forEach(el => {
-        el.addEventListener('submit', (e) => {
-          const handlerStr = el.getAttribute('data-onsubmit');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
-
-      // Bind change handlers (data-onchange)
-      document.querySelectorAll('[data-onchange]').forEach(el => {
-        el.addEventListener('change', (e) => {
-          const handlerStr = el.getAttribute('data-onchange');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
-
-      // Bind input handlers (data-oninput)
-      document.querySelectorAll('[data-oninput]').forEach(el => {
-        el.addEventListener('input', (e) => {
-          const handlerStr = el.getAttribute('data-oninput');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
-
-      console.log("[EVENT-BIND] Programmatic event bindings complete.");
+      console.log("[EVENT-BIND] Delegated programmatic event bindings ready; dynamic elements are supported.");
     });
 </script>
 </body>
