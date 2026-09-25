@@ -2862,12 +2862,13 @@
           label = `Current Month (${now.toLocaleString('default', { month: 'long', year: 'numeric' })})`;
           fiscalSubtitle = `Monthly Calendar View (${this.formatDate(start)} - ${this.formatDate(end)})`;
         } else if (key === "current_quarter") {
-          targetFiscalYear = 2026;
-          quarter = 3;
-          start = new Date(2026, 7, 1);
-          end = new Date(2026, 9, 31, 23, 59, 59);
-          label = "FY 2026 - Q3 (Aug, Sep, Oct 2026) - Current";
-          fiscalSubtitle = "Fiscal Year 2026 Q3 Schedule (Aug - Oct 2026)";
+          targetFiscalYear = currentFyInfo.fiscalYear;
+          quarter = currentFyInfo.quarter;
+          const bounds = this.getQuarterBounds(targetFiscalYear, quarter);
+          start = bounds.start;
+          end = bounds.end;
+          label = `FY ${targetFiscalYear} - Q${quarter} (${this.getQuarterMonthNames(quarter)}) - Current`;
+          fiscalSubtitle = `Fiscal Year ${targetFiscalYear} Q${quarter} Schedule (${this.getQuarterMonthNames(quarter)})`;
         } else {
           // All Time History (default)
           start = new Date(2020, 0, 1);
@@ -3519,11 +3520,12 @@
         const qBtn = document.getElementById(`btn-q-${qNum}`);
         if (qBtn) qBtn.className = "quarter-btn px-2.5 py-1 rounded text-xs font-bold transition-all cursor-pointer bg-indigo-600 text-white border border-indigo-600 shadow-2xs";
       } else if (keyLower === "current_quarter") {
-        selectedFiscalYear = "2026";
-        currentQuarterType = "q3";
+        const currentFyInfo = FiscalCalendar.getFiscalYearAndQuarter(new Date());
+        selectedFiscalYear = String(currentFyInfo.fiscalYear);
+        currentQuarterType = "q" + currentFyInfo.quarter;
         const yearSelect = document.getElementById("fiscal-year-select");
-        if (yearSelect) yearSelect.value = "2026";
-        const qBtn = document.getElementById("btn-q-q3");
+        if (yearSelect) yearSelect.value = selectedFiscalYear;
+        const qBtn = document.getElementById("btn-q-" + currentQuarterType);
         if (qBtn) qBtn.className = "quarter-btn px-2.5 py-1 rounded text-xs font-bold transition-all cursor-pointer bg-indigo-600 text-white border border-indigo-600 shadow-2xs";
       }
 
@@ -3761,26 +3763,29 @@
         }
       }
 
-      // 3. Fallback to REAL_UAE_RECORDS ONLY if network/backend failed completely and not wiped
+      // 3. Never fabricate supplier data when the backend is unavailable.
       if (!fetchedSuccessfully) {
-        const isWiped = localStorage.getItem("accounting_suppliers_wiped") === "true";
-        if (!isWiped) {
-          suppliersList = (REAL_UAE_RECORDS || []).map(r => ({ name: r.party_name || r.name, trn: r.trn, id: r.id }));
-          try {
-            const saved = localStorage.getItem("accounting_custom_suppliers");
-            if (saved) {
-              const custom = JSON.parse(saved);
-              if (Array.isArray(custom)) {
-                custom.forEach(cs => {
-                  if (cs && cs.name && cs.trn && !suppliersList.some(s => String(s.trn) === String(cs.trn))) {
-                    suppliersList.push({ name: cs.name, trn: cs.trn });
-                  }
-                });
-              }
-            }
-          } catch (e) {}
-        }
+        const errorRow = `<tr><td colspan="4" class="py-6 text-center text-rose-600 text-xs font-medium">
+          Unable to load the supplier directory from the live database.
+          <div class="mt-1 text-[10px] text-slate-500">No local/sample supplier records were substituted.</div>
+        </td></tr>`;
+        tbody.innerHTML = errorRow;
+        if (countBadge) countBadge.textContent = "Database unavailable";
+        return;
       }
+
+      // Keep the local cache synchronized only with records returned by the live backend.
+      REAL_UAE_RECORDS.length = 0;
+      suppliersList.forEach(s => {
+        if (s && (s.name || s.party_name) && s.trn) {
+          REAL_UAE_RECORDS.push({
+            party_name: s.name || s.party_name,
+            trn: String(s.trn),
+            id: s.id,
+            type: "purchases"
+          });
+        }
+      });
 
       // Always filter out deleted suppliers so they never reappear
       try {
@@ -4106,6 +4111,41 @@
       }
     }
 
+    async function fetchAllTransactionsFromServer() {
+      const all = [];
+      let page = 1;
+      const pageSize = 500;
+
+      while (true) {
+        const response = await fetch(`/api/transactions?paginated=true&page=${page}&pageSize=${pageSize}&order=transaction_date.desc`, {
+          headers: { "Authorization": `Bearer ${getAuthToken()}`, "Accept": "application/json" }
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          const error = new Error(errData.error || `HTTP ${response.status}: Failed to fetch transactions`);
+          error.status = response.status;
+          throw error;
+        }
+
+        const payload = await response.json();
+        if (!payload || payload.success !== true || !Array.isArray(payload.data)) {
+          throw new Error("Invalid paginated transactions response.");
+        }
+
+        all.push(...payload.data);
+
+        if (!payload.pagination || !payload.pagination.hasMore) break;
+        page += 1;
+
+        if (page > 1000) {
+          throw new Error("Transaction pagination exceeded the safety limit.");
+        }
+      }
+
+      return all;
+    }
+
     async function loadAnalytics(filterKey = currentFilter) {
       currentFilter = filterKey;
       const label = document.getElementById("active-range-label");
@@ -4135,26 +4175,26 @@
           await checkAdminAuthSession();
           token = getAuthToken();
         }
-        let resp = await fetch(`/api/transactions?order=transaction_date.desc`, {
-          headers: token ? { "Authorization": `Bearer ${token}` } : {}
-        });
-        if (resp.status === 401) {
-          const reauthOk = await checkAdminAuthSession();
-          if (reauthOk) {
-            const newToken = getAuthToken();
-            resp = await fetch(`/api/transactions?order=transaction_date.desc`, {
-              headers: newToken ? { "Authorization": `Bearer ${newToken}` } : {}
-            });
+        if (!token) {
+          throw new Error("No authenticated admin session is available.");
+        }
+
+        let dbTx;
+        try {
+          dbTx = await fetchAllTransactionsFromServer();
+        } catch (serverErr) {
+          if (Number(serverErr?.status) === 401) {
+            const reauthOk = await checkAdminAuthSession();
+            if (!reauthOk) throw serverErr;
+            dbTx = await fetchAllTransactionsFromServer();
+          } else {
+            throw serverErr;
           }
         }
-        if (resp.ok) {
-          const dbTx = await resp.json();
-          if (Array.isArray(dbTx)) {
-            const data = processTransactionsAnalytics(dbTx, filterKey, currentDateFrom, currentDateTo, currentSearch);
-            renderDashboard(data);
-            return;
-          }
-        }
+
+        const data = processTransactionsAnalytics(dbTx, filterKey, currentDateFrom, currentDateTo, currentSearch);
+        renderDashboard(data);
+        return;
       } catch (err) {
         console.warn("Server transactions query failed:", err);
       }
@@ -4189,9 +4229,22 @@
         }
       }
 
-      // Client fallback analytics respecting custom fiscal quarters, date range, and search
-      const data = simulateAnalytics(filterKey, currentDateFrom, currentDateTo, currentSearch);
-      renderDashboard(data);
+      // Do not fabricate or silently display zeroed analytics when live data is unavailable.
+      if (Array.isArray(allLedgerTransactions) && allLedgerTransactions.length > 0) {
+        const data = processTransactionsAnalytics(
+          allLedgerTransactions,
+          filterKey,
+          currentDateFrom,
+          currentDateTo,
+          currentSearch
+        );
+        renderDashboard(data);
+      } else {
+        const rangeEl = document.getElementById("active-range-label");
+        if (rangeEl) rangeEl.textContent = "Live database unavailable";
+        showToast("Unable to load live accounting data. No sample or simulated figures were displayed.", "error");
+        return;
+      }
 
       // Sync ledger if synchronized period mode is active
       if (typeof applyLedgerFilters === "function" && typeof ledgerPeriodSyncMode !== "undefined" && ledgerPeriodSyncMode === "sync") {
@@ -5633,14 +5686,8 @@
           }
         }
 
-        // 4. Standalone simulation fallback
-        await new Promise(r => setTimeout(r, 600));
-        closeImportModal();
-        currentFilter = "all_time";
-        ledgerPeriodSyncMode = "all";
-        await loadAnalytics("all_time");
-        await loadLiveTransactions();
-        showToast(`Import batch complete! ${pendingCsvRows.length} records processed.`, "success");
+        // Never claim a financial import succeeded without a real backend/database write.
+        throw new Error("Import could not be completed against the live database. No records were simulated or marked as imported.");
 
       } catch (err) {
         showToast(err.message || "Failed to process import batch", "error");
@@ -5681,28 +5728,9 @@
       return Number(amount || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
-    // Authentic UAE Suppliers strictly from the 19 registered records
-    const REAL_UAE_RECORDS = [
-      { party_name: "SEWA", trn: "100394961500003", type: "purchases" },
-      { party_name: "Talabat", trn: "100000978500003", type: "sales" },
-      { party_name: "NATIONAL DAIRY L.L.C", trn: "100303591000003", type: "purchases" },
-      { party_name: "AL HAJJAN FOODSTUFF TRADING", trn: "100023718800003", type: "sales" },
-      { party_name: "Al Futtaim Logistics LLC", trn: "100234567890003", type: "sales" },
-      { party_name: "Emirates National Oil Co", trn: "100456789012003", type: "purchases" },
-      { party_name: "Emaar Properties PJSC", trn: "100345678901003", type: "sales" },
-      { party_name: "Sharaf DG Commercial", trn: "100567890123003", type: "purchases" },
-      { party_name: "Dubai Holding Tech LLC", trn: "100678901234003", type: "sales" },
-      { party_name: "DEWA Utility Services", trn: "100901234567003", type: "purchases" },
-      { party_name: "Etisalat Telecommunications", trn: "100012345678003", type: "purchases" },
-      { party_name: "Du Telecom PJSC", trn: "100123456789003", type: "purchases" },
-      { party_name: "ADNOC Distribution", trn: "100234567891003", type: "purchases" },
-      { party_name: "Lulu Hypermarket LLC", trn: "100345678912003", type: "sales" },
-      { party_name: "Carrefour Majid Al Futtaim", trn: "100456789123003", type: "sales" },
-      { party_name: "Almarai Emirates LLC", trn: "100567891234003", type: "purchases" },
-      { party_name: "Aramex Emirates LLC", trn: "100678912345003", type: "purchases" },
-      { party_name: "Agthia Group PJSC", trn: "100789012345003", type: "sales" },
-      { party_name: "DP World UAE Region", trn: "100890123456003", type: "sales" }
-    ];
+    // Supplier directory cache populated only from real backend data.
+    // Never seed this admin dashboard with fabricated supplier names/TRNs.
+    const REAL_UAE_RECORDS = [];
 
     // Load custom suppliers saved in localStorage
     try {
@@ -5987,7 +6015,7 @@
       tbody.innerHTML = `<tr><td colspan="5" class="py-6 text-center text-slate-400 text-xs font-medium">Loading user directory...</td></tr>`;
 
       let usersList = [];
-      const currentUser = (localStorage.getItem("auth_user") || "Shareef").toLowerCase().trim();
+      const currentUser = (getAuthUser() || "").toLowerCase().trim();
 
       // 1. Fetch via desktop pywebview if available
       try {
@@ -6972,25 +7000,20 @@
             token = getAuthToken();
           }
 
-          let response = await fetch("/api/transactions", {
-            headers: token ? { "Authorization": `Bearer ${token}` } : {}
-          });
-
-          // If session expired or unauthenticated, attempt re-auth and retry once
-          if (response.status === 401) {
-            const reauthOk = await checkAdminAuthSession();
-            if (reauthOk) {
-              const newToken = getAuthToken();
-              response = await fetch("/api/transactions", {
-                headers: newToken ? { "Authorization": `Bearer ${newToken}` } : {}
-              });
+          try {
+            records = await fetchAllTransactionsFromServer();
+          } catch (serverErr) {
+            if (Number(serverErr?.status) === 401) {
+              const reauthOk = await checkAdminAuthSession();
+              if (reauthOk) {
+                records = await fetchAllTransactionsFromServer();
+              } else {
+                throw serverErr;
+              }
+            } else {
+              throw serverErr;
             }
           }
-
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: Failed to fetch live transactions`);
-          }
-          records = await response.json();
         }
 
         // Normalize response if wrapped in an object
@@ -8178,118 +8201,150 @@
     // ------------------------------------------------------------------------
     // CSP-COMPLIANT AUTOMATIC PROGRAMMATIC EVENT BINDING ENGINE (CQ-08)
     // ------------------------------------------------------------------------
+    function splitHandlerArguments(argsStr) {
+      const args = [];
+      let current = "";
+      let quote = null;
+      let depth = 0;
+
+      for (let i = 0; i < argsStr.length; i++) {
+        const ch = argsStr[i];
+
+        if (quote) {
+          current += ch;
+          if (ch === quote && argsStr[i - 1] !== "\\") quote = null;
+          continue;
+        }
+
+        if (ch === "'" || ch === '"' || ch === String.fromCharCode(96)) {
+          quote = ch;
+          current += ch;
+          continue;
+        }
+
+        if (ch === "(" || ch === "[" || ch === "{") depth++;
+        if (ch === ")" || ch === "]" || ch === "}") depth--;
+
+        if (ch === "," && depth === 0) {
+          args.push(current.trim());
+          current = "";
+          continue;
+        }
+
+        current += ch;
+      }
+
+      if (current.trim()) args.push(current.trim());
+      return args;
+    }
+
     function executeInlineHandler(el, handlerStr, event) {
       if (!handlerStr) return;
-      const statements = handlerStr.split(';').map(s => s.trim()).filter(Boolean);
-      
+
+      const statements = handlerStr.split(";").map(s => s.trim()).filter(Boolean);
+
       for (const statement of statements) {
-        if (statement.startsWith('event.stopPropagation()')) {
+        if (statement === "event.stopPropagation()") {
           event.stopPropagation();
           continue;
         }
-        if (statement.startsWith('event.preventDefault()')) {
+
+        if (statement === "event.preventDefault()") {
           event.preventDefault();
           continue;
         }
 
-        // Direct element style/class show/hide manipulations
-        const toastMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.add\(['"]([^'"]+)['"]\)/);
-        if (toastMatch) {
-          const targetEl = document.getElementById(toastMatch[1]);
-          if (targetEl) targetEl.classList.add(toastMatch[2]);
-          continue;
-        }
-        const toastRemoveMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.remove\(['"]([^'"]+)['"]\)/);
-        if (toastRemoveMatch) {
-          const targetEl = document.getElementById(toastRemoveMatch[1]);
-          if (targetEl) targetEl.classList.remove(toastRemoveMatch[2]);
+        const addClassMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.add\(['"]([^'"]+)['"]\)/);
+        if (addClassMatch) {
+          const target = document.getElementById(addClassMatch[1]);
+          if (target) target.classList.add(addClassMatch[2]);
           continue;
         }
 
-        // Click emulation trigger
+        const removeClassMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.remove\(['"]([^'"]+)['"]\)/);
+        if (removeClassMatch) {
+          const target = document.getElementById(removeClassMatch[1]);
+          if (target) target.classList.remove(removeClassMatch[2]);
+          continue;
+        }
+
         const clickMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.click\(\)/);
         if (clickMatch) {
-          const targetEl = document.getElementById(clickMatch[1]);
-          if (targetEl) targetEl.click();
+          const target = document.getElementById(clickMatch[1]);
+          if (target) target.click();
           continue;
         }
 
-        // Function call: functionName(arguments)
-        const match = statement.match(/^([a-zA-Z0-9_$]+)\((.*)\)$/);
-        if (match) {
-          const funcName = match[1];
-          const argsStr = match[2].trim();
-          const fn = window[funcName];
-          if (typeof fn === 'function') {
-            const args = [];
-            if (argsStr) {
-              const rawArgs = argsStr.split(',').map(a => a.trim());
-              for (const rawArg of rawArgs) {
-                if (rawArg === 'event') {
-                  args.push(event);
-                } else if (rawArg === 'this') {
-                  args.push(el);
-                } else if (rawArg === 'this.value') {
-                  args.push(el.value);
-                } else if (rawArg === 'this.checked') {
-                  args.push(el.checked);
-                } else if ((rawArg.startsWith("'") && rawArg.endsWith("'")) || (rawArg.startsWith('"') && rawArg.endsWith('"'))) {
-                  args.push(rawArg.slice(1, -1));
-                } else if (rawArg.startsWith(String.fromCharCode(96)) && rawArg.endsWith(String.fromCharCode(96))) {
-                  args.push(rawArg.slice(1, -1)); // simple template string fallback
-                } else {
-                  if (!isNaN(rawArg) && rawArg !== '') {
-                    args.push(Number(rawArg));
-                  } else {
-                    args.push(window[rawArg] !== undefined ? window[rawArg] : rawArg);
-                  }
-                }
-              }
+        const callMatch = statement.match(/^([A-Za-z_$][\w$]*)\((.*)\)$/);
+        if (!callMatch) continue;
+
+        const fnName = callMatch[1];
+        const fn = window[fnName];
+        if (typeof fn !== "function") {
+          console.warn("[EVENT-BIND] Function window." + fnName + " is not defined.");
+          continue;
+        }
+
+        const args = [];
+        const argsStr = callMatch[2].trim();
+
+        if (argsStr) {
+          for (const rawArg of splitHandlerArguments(argsStr)) {
+            if (rawArg === "event") args.push(event);
+            else if (rawArg === "this") args.push(el);
+            else if (rawArg === "this.value") args.push(el.value);
+            else if (rawArg === "this.checked") args.push(el.checked);
+            else if ((rawArg.startsWith("'") && rawArg.endsWith("'")) || (rawArg.startsWith('"') && rawArg.endsWith('"'))) {
+              args.push(rawArg.slice(1, -1));
+            } else if (rawArg.startsWith(String.fromCharCode(96)) && rawArg.endsWith(String.fromCharCode(96))) {
+              args.push(rawArg.slice(1, -1));
+            } else if (rawArg === "true" || rawArg === "false") {
+              args.push(rawArg === "true");
+            } else if (rawArg === "null") {
+              args.push(null);
+            } else if (!isNaN(rawArg) && rawArg !== "") {
+              args.push(Number(rawArg));
+            } else {
+              args.push(window[rawArg] !== undefined ? window[rawArg] : rawArg);
             }
-            fn.apply(el, args);
-          } else {
-            console.warn("[EVENT-BIND] Function window." + funcName + " is not defined.");
           }
+        }
+
+        try {
+          const result = fn.apply(el, args);
+          if (result && typeof result.then === "function") {
+            result.catch(err => console.error("[EVENT-BIND] Async handler failed:", fnName, err));
+          }
+        } catch (err) {
+          console.error("[EVENT-BIND] Handler failed:", fnName, err);
         }
       }
     }
 
     onReady(() => {
-      console.log("[EVENT-BIND] Initializing programmatic CSP event bindings...");
-      
-      // Bind click handlers (data-onclick)
-      document.querySelectorAll('[data-onclick]').forEach(el => {
-        el.addEventListener('click', (e) => {
-          const handlerStr = el.getAttribute('data-onclick');
-          executeInlineHandler(el, handlerStr, e);
+      console.log("[EVENT-BIND] Installing delegated event handlers for static and dynamic elements...");
+
+      const delegatedBindings = [
+        ["click", "data-onclick"],
+        ["submit", "data-onsubmit"],
+        ["change", "data-onchange"],
+        ["input", "data-oninput"]
+      ];
+
+      delegatedBindings.forEach(([eventType, attribute]) => {
+        document.addEventListener(eventType, event => {
+          const target = event.target;
+          const candidate = target && typeof target.closest === "function"
+            ? target.closest("[" + attribute + "]")
+            : null;
+
+          if (!candidate) return;
+
+          executeInlineHandler(candidate, candidate.getAttribute(attribute), event);
         });
       });
 
-      // Bind submit handlers (data-onsubmit)
-      document.querySelectorAll('[data-onsubmit]').forEach(el => {
-        el.addEventListener('submit', (e) => {
-          const handlerStr = el.getAttribute('data-onsubmit');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
-
-      // Bind change handlers (data-onchange)
-      document.querySelectorAll('[data-onchange]').forEach(el => {
-        el.addEventListener('change', (e) => {
-          const handlerStr = el.getAttribute('data-onchange');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
-
-      // Bind input handlers (data-oninput)
-      document.querySelectorAll('[data-oninput]').forEach(el => {
-        el.addEventListener('input', (e) => {
-          const handlerStr = el.getAttribute('data-oninput');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
-
-      console.log("[EVENT-BIND] Programmatic event bindings complete.");
+      console.log("[EVENT-BIND] Delegated handlers ready. Dynamic elements are supported.");
     });
 </script>
 </body>
