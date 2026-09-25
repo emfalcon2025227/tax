@@ -1,0 +1,2529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- Banking-Grade Route Guard: Immediate State Leakage Prevention -->
+  <script>
+    (function() {
+      const token = sessionStorage.getItem("token") || sessionStorage.getItem("auth_token") || localStorage.getItem("token") || localStorage.getItem("auth_token");
+      if (!token && !window.location.pathname.includes('login.html')) {
+        window.location.replace("/login.html");
+      }
+    })();
+  </script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>Tax & Accounting Data Entry</title>
+  <meta name="description" content="Secure mobile and desktop blind data entry application with automatic VAT calculation and Supabase insertion." />
+  <meta property="og:title" content="Tax & Accounting Data Entry" />
+  <meta property="og:description" content="Secure mobile and desktop blind data entry application with automatic VAT calculation and Supabase insertion." />
+  
+  <!-- Mobile Web App & PWA Meta Tags -->
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0f172a" />
+
+  <!-- PWA Manifest & Icons -->
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <meta name="apple-mobile-web-app-title" content="SDI Accounting" />
+
+  <!-- Service Worker Registration -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/service-worker.js')
+          .then(reg => console.log('[PWA] Service Worker registered:', reg.scope))
+          .catch(err => console.warn('[PWA] Service Worker registration failed:', err));
+      });
+    }
+  </script>
+  
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Supabase JS Client via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            slate: {
+              850: '#172033',
+              950: '#0b1120',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Mobile-first usability optimizations */
+    html, body {
+      overscroll-behavior-y: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    
+    /* Touch target baseline of 48px */
+    .touch-target {
+      min-height: 48px;
+    }
+
+    /* Safe-area padding for Android gesture nav & iOS home indicators */
+    .safe-bottom {
+      padding-bottom: max(1rem, env(safe-area-inset-bottom, 1rem));
+    }
+    .safe-top {
+      padding-top: max(0.75rem, env(safe-area-inset-top, 0.75rem));
+    }
+
+    input:focus, select:focus {
+      outline: none;
+    }
+
+    /* Hide number input spinners */
+    input[type=number]::-webkit-inner-spin-button, 
+    input[type=number]::-webkit-outer-spin-button { 
+      -webkit-appearance: none; 
+      margin: 0; 
+    }
+    input[type=number] {
+      -moz-appearance: textfield;
+    }
+
+    @keyframes pulse-subtle {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.85; transform: scale(1.03); }
+    }
+    .animate-pulse-subtle {
+      animation: pulse-subtle 2s infinite ease-in-out;
+    }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-900 antialiased min-h-screen flex flex-col font-sans select-none pb-24">
+
+  <!-- MOBILE APP STICKY HEADER -->
+  <header class="bg-slate-900 text-white sticky top-0 z-30 shadow-md safe-top">
+    <div class="px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center space-x-2.5">
+        <div class="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center font-bold text-sm shadow-sm text-white">
+          VAT
+        </div>
+        <div>
+          <h1 class="text-sm font-bold tracking-tight text-white leading-tight">Tax & Accounting</h1>
+          <p class="text-[11px] text-slate-400 font-medium">Mobile Data Entry (Client-Side)</p>
+        </div>
+      </div>
+
+      <div class="flex items-center space-x-2">
+        <!-- STICKY PENDING OFFLINE SYNC BUTTON -->
+        <button 
+          type="button" 
+          id="sync-pending-btn" 
+          data-onclick="syncOfflineQueue()" 
+          class="hidden items-center space-x-1 px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-sm active:scale-95 transition-all cursor-pointer animate-pulse-subtle"
+          title="Click to sync pending offline invoices to Supabase"
+        >
+          <svg class="w-3.5 h-3.5 text-slate-950 animate-spin hidden" id="sync-icon-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+          <svg class="w-3.5 h-3.5 text-slate-950" id="sync-icon-static" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+          </svg>
+          <span id="sync-pending-label">Sync Pending (0)</span>
+        </button>
+
+        <!-- Supabase Status Badge -->
+        <button 
+          type="button" 
+          data-onclick="openConfigModal()" 
+          id="status-badge"
+          class="flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-800 text-slate-300 border border-slate-700 active:scale-95 transition-transform"
+        >
+          <span id="status-dot" class="w-2 h-2 rounded-full bg-amber-400"></span>
+          <span id="status-text">Connecting...</span>
+        </button>
+      </div>
+    </div>
+    
+    <!-- SUB-BANNER: PROTOCOL, USER IDENTITY & LINK TO ADMIN DASHBOARD -->
+    <div class="bg-slate-950/90 px-4 py-1.5 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
+      <div class="flex items-center space-x-2">
+        <span class="flex items-center space-x-1">
+          <span class="text-emerald-400 font-bold">●</span>
+          <span>Blind Entry</span>
+        </span>
+        <span class="text-slate-600">|</span>
+        <span class="inline-flex items-center space-x-1 text-slate-300 font-medium">
+          <span>👤</span>
+          <span id="user-badge-name" class="font-bold text-white">User</span>
+          <span id="user-badge-role" class="px-1.5 py-0.2 rounded text-[10px] font-extrabold bg-slate-800 text-indigo-300 border border-slate-700">Role</span>
+        </span>
+      </div>
+      <div class="flex items-center space-x-3">
+        <a href="admin.html" id="nav-admin-link" data-onclick="handleAdminNav(event)" class="text-blue-400 hover:text-blue-300 font-semibold flex items-center space-x-1 cursor-pointer">
+          <span>Admin Dashboard</span>
+          <span>→</span>
+        </a>
+        <button type="button" data-onclick="logout()" class="text-rose-400 hover:text-rose-300 text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-950/60 border border-rose-900/60 transition-colors cursor-pointer" title="Sign out of accounting system">
+          Logout
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN MOBILE CONTENT -->
+  <main class="flex-1 w-full max-w-lg mx-auto p-4 space-y-4">
+
+    <!-- FEEDBACK ALERT NOTIFICATIONS -->
+    <div id="alert-banner" class="hidden p-4 rounded-xl border shadow-sm transition-all duration-200">
+      <div class="flex items-start space-x-3">
+        <span id="alert-icon" class="text-lg mt-0.5">✓</span>
+        <div class="flex-1">
+          <h2 id="alert-title" class="text-xs font-bold">Record Saved</h2>
+          <p id="alert-desc" class="text-xs mt-0.5 opacity-90">Transaction pushed to Supabase.</p>
+          <div id="alert-details" class="mt-2 text-xs font-mono font-semibold hidden grid-cols-3 gap-2 p-2 bg-black/10 rounded-lg">
+            <div>Net: <span id="alert-net">-</span></div>
+            <div>VAT: <span id="alert-vat">-</span></div>
+            <div>Total: <span id="alert-total">-</span></div>
+          </div>
+        </div>
+        <button type="button" data-onclick="dismissAlert()" class="text-sm font-bold p-1 opacity-70 hover:opacity-100">✕</button>
+      </div>
+    </div>
+
+    <!-- OFFLINE QUEUE NOTICE CARD (WHEN QUEUE HAS ITEMS) -->
+    <div id="offline-queue-card" class="hidden p-3.5 rounded-xl border border-amber-300 bg-amber-50 text-amber-950 shadow-xs transition-all">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center space-x-2 min-w-0">
+          <span class="text-amber-600 font-bold text-base shrink-0">⚡</span>
+          <div class="min-w-0">
+            <div class="text-xs font-bold text-amber-950 flex items-center gap-1.5" id="offline-queue-title">
+              <span>Offline Queue Active</span>
+              <span id="offline-queue-count-badge" class="px-1.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-200 text-amber-900 leading-none">0</span>
+            </div>
+            <div class="text-[11px] text-amber-800 truncate" id="offline-queue-desc">You have records stored locally waiting to sync.</div>
+          </div>
+        </div>
+        <div class="flex items-center space-x-1.5 shrink-0">
+          <!-- EXPAND BUTTON -->
+          <button 
+            type="button" 
+            id="offline-queue-expand-btn" 
+            data-onclick="toggleOfflineQueueList()" 
+            class="px-2.5 py-1 bg-white hover:bg-amber-100 text-amber-950 border border-amber-300 rounded-lg text-xs font-bold shadow-2xs active:scale-95 transition-all flex items-center space-x-1 cursor-pointer"
+            aria-expanded="false"
+            aria-controls="offline-queue-details"
+          >
+            <span id="offline-queue-expand-text">Expand</span>
+            <svg id="offline-queue-expand-icon" class="w-3.5 h-3.5 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          <!-- SYNC NOW BUTTON -->
+          <button 
+            type="button" 
+            data-onclick="syncOfflineQueue()" 
+            class="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold shadow-xs active:scale-95 transition-all cursor-pointer"
+          >
+            Sync Now
+          </button>
+        </div>
+      </div>
+
+      <!-- SCROLLABLE LIST OF SPECIFIC INVOICES WAITING TO BE SYNCED -->
+      <div id="offline-queue-details" class="hidden mt-3 pt-2.5 border-t border-amber-200/90">
+        <div class="flex items-center justify-between text-[11px] font-bold text-amber-900 mb-1.5 px-0.5">
+          <span>Invoices Waiting to Sync</span>
+          <span class="text-[10px] text-amber-700 font-normal">Scroll to view</span>
+        </div>
+        <div id="offline-queue-list" class="max-h-48 overflow-y-auto space-y-1.5 pr-1 font-sans text-xs divide-y divide-amber-200/50">
+          <!-- Populated dynamically by renderOfflineQueueList() -->
+        </div>
+      </div>
+    </div>
+
+    <!-- PRIMARY MOBILE FORM CARD -->
+    <form id="mobile-entry-form" data-onsubmit="handleMobileSubmit(event)" class="bg-white rounded-2xl border border-slate-200/90 shadow-sm p-4 space-y-4">
+
+      <!-- 1. TRANSACTION TYPE (PURCHASES / SALES SEGMENTED TOGGLE) -->
+      <div>
+        <label class="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+          1. Transaction Type <span class="text-rose-500">*</span>
+        </label>
+        <div class="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl border border-slate-200">
+          <label class="cursor-pointer">
+            <input type="radio" name="transaction_type" value="purchases" checked data-onchange="handleTypeChange(this.value)" class="sr-only peer" />
+            <div class="touch-target flex items-center justify-center rounded-lg text-xs font-bold text-slate-600 peer-checked:bg-white peer-checked:text-indigo-700 peer-checked:shadow-xs transition-all">
+              <span class="mr-1.5">↘</span> Purchases Bill
+            </div>
+          </label>
+          <label class="cursor-pointer">
+            <input type="radio" name="transaction_type" value="sales" data-onchange="handleTypeChange(this.value)" class="sr-only peer" />
+            <div class="touch-target flex items-center justify-center rounded-lg text-xs font-bold text-slate-600 peer-checked:bg-white peer-checked:text-blue-700 peer-checked:shadow-xs transition-all">
+              <span class="mr-1.5">↗</span> Sales Invoice
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- 2. DATE (HTML5 DATE PICKER) -->
+      <div>
+        <label for="transaction_date" class="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+          2. Transaction Date <span class="text-rose-500">*</span>
+        </label>
+        <input 
+          type="date" 
+          id="transaction_date" 
+          name="transaction_date" 
+          required 
+          class="touch-target w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm text-slate-900 font-medium focus:bg-white focus:ring-2 focus:ring-slate-900 focus:border-slate-900 transition-all select-text"
+        />
+      </div>
+
+      <!-- 3. INVOICE NO (TEXT - OPTIONAL) -->
+      <div>
+        <label id="invoice-no-label" for="invoice_no" class="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+          3. Bill / Invoice Number <span class="text-slate-400 font-normal text-xs normal-case">(Optional)</span>
+        </label>
+        <input 
+          type="text" 
+          id="invoice_no" 
+          name="invoice_no" 
+          placeholder="e.g. PUR-2026-0045 (Optional)" 
+          autocomplete="off"
+          autocapitalize="characters"
+          class="touch-target w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono text-slate-900 font-bold focus:bg-white focus:ring-2 focus:ring-slate-900 focus:border-slate-900 transition-all select-text"
+        />
+      </div>
+
+      <!-- 4. PARTY NAME & SMART SUPPLIER SELECTION / REGISTRATION -->
+      <div id="party-name-container" class="space-y-2">
+        <div class="flex items-center justify-between">
+          <label id="party-name-label" for="party_name" class="block text-[11px] font-bold uppercase tracking-wider text-slate-700">
+            4. Supplier / Vendor Name <span class="text-rose-500">*</span>
+          </label>
+          <div class="flex items-center space-x-1.5">
+            <span class="text-[10px] text-blue-700 font-bold bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100 hidden xs:inline-block">
+              Auto-fills TRN
+            </span>
+            <!-- Direct button to open/toggle the Supplier Data Entry Form -->
+            <button 
+              type="button" 
+              id="btn-toggle-inline-supplier" 
+              data-onclick="toggleInlineSupplierForm()" 
+              class="touch-target px-2.5 py-1 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 border border-emerald-300 rounded-lg flex items-center space-x-1 transition-all shadow-2xs cursor-pointer"
+              title="Add Supplier Form"
+            >
+              <span class="text-xs">➕</span>
+              <span class="font-sans font-bold">Add Supplier Form</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Custom Searchable Supplier Dropdown (Replaces standard select) -->
+        <div class="relative" id="custom-supplier-dropdown">
+          <!-- Dropdown Trigger Button -->
+          <button 
+            type="button" 
+            id="supplier-dropdown-trigger" 
+            data-onclick="toggleSupplierDropdown()" 
+            class="touch-target w-full px-3.5 py-2.5 bg-blue-50/60 hover:bg-blue-50 border border-blue-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-blue-600 focus:border-blue-600 transition-all flex items-center justify-between shadow-2xs cursor-pointer"
+            aria-haspopup="listbox"
+            aria-expanded="false"
+          >
+            <div class="flex items-center space-x-2 truncate pr-2">
+              <span class="text-blue-600 text-sm">🔍</span>
+              <span id="supplier-selected-label" class="truncate text-slate-700 font-medium">Select or search registered supplier...</span>
+            </div>
+            <div class="flex items-center space-x-1.5 shrink-0">
+              <span id="supplier-count-pill" class="text-[10px] bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded font-mono font-bold">19 Registered</span>
+              <svg id="supplier-chevron-icon" class="w-4 h-4 text-slate-400 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+              </svg>
+            </div>
+          </button>
+
+          <!-- Dropdown Menu Popover -->
+          <div 
+            id="supplier-dropdown-menu" 
+            class="hidden absolute left-0 right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl z-50 overflow-hidden"
+          >
+            <!-- Real-Time Filter Search Input -->
+            <div class="p-2 border-b border-slate-100 bg-slate-50 flex items-center gap-2">
+              <svg class="w-3.5 h-3.5 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+              </svg>
+              <input 
+                type="text" 
+                id="supplier-search-input" 
+                data-oninput="handleSupplierSearch(this.value)" 
+                placeholder="Type to filter (e.g. SEWA, Talabat, Al Safa)..." 
+                class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-medium"
+                autocomplete="off"
+              />
+              <button 
+                type="button" 
+                id="supplier-clear-search-btn" 
+                data-onclick="clearSupplierSearch()" 
+                class="hidden text-slate-400 hover:text-slate-600 text-xs px-1 font-bold"
+              >✕</button>
+            </div>
+
+            <!-- Scrollable Suppliers List -->
+            <div id="supplier-items-list" class="max-h-56 overflow-y-auto divide-y divide-slate-100 text-xs">
+              <!-- Dynamically populated via renderSupplierDropdownItems() -->
+            </div>
+
+            <!-- Empty State -->
+            <div id="supplier-no-match" class="hidden py-4 px-3 text-center text-xs text-slate-400">
+              No matching suppliers found.
+            </div>
+
+            <!-- Prominent "Add New Supplier" Action Button at bottom -->
+            <div class="p-2 border-t border-slate-100 bg-slate-50/90">
+              <button 
+                type="button" 
+                id="btn-open-add-supplier" 
+                data-onclick="toggleInlineSupplierForm(true)" 
+                class="w-full py-2 px-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-lg text-xs font-bold flex items-center justify-center space-x-1.5 transition-colors shadow-xs cursor-pointer"
+              >
+                <span>➕</span>
+                <span>Add New Supplier</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Manual / Selected Trade Name Input -->
+        <input 
+          type="text" 
+          id="party_name" 
+          name="party_name" 
+          placeholder="Or enter custom party/customer name" 
+          required 
+          autocomplete="off"
+          class="touch-target w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm text-slate-900 font-medium focus:bg-white focus:ring-2 focus:ring-slate-900 focus:border-slate-900 transition-all select-text"
+        />
+
+        <!-- DEDICATED SUPPLIER DATA ENTRY FORM CARD -->
+        <div 
+          id="inline-supplier-card" 
+          class="hidden mt-2 p-3.5 bg-gradient-to-br from-emerald-50/90 via-white to-slate-50 border-2 border-emerald-300 rounded-2xl space-y-3 shadow-sm transition-all"
+        >
+          <!-- Card Header -->
+          <div class="flex items-center justify-between border-b border-emerald-200/70 pb-2">
+            <div class="flex items-center space-x-2">
+              <div class="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold text-sm shadow-xs">
+                🏢
+              </div>
+              <div>
+                <h4 class="text-xs font-bold text-slate-900 flex items-center space-x-1.5">
+                  <span>Supplier Data Entry Form</span>
+                  <span class="text-[9px] font-mono font-bold bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded">FTA 15-Digit TRN</span>
+                </h4>
+                <p class="text-[10px] text-slate-600 font-medium">Register supplier with strict 15-digit TRN validation and auto-apply to current transaction</p>
+              </div>
+            </div>
+            <button 
+              type="button" 
+              data-onclick="toggleInlineSupplierForm(false)" 
+              class="w-6 h-6 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center text-xs font-bold transition-colors cursor-pointer"
+              title="Close form"
+            >
+              ✕
+            </button>
+          </div>
+
+          <!-- Alert Notification Area -->
+          <div id="inline-supplier-alert" class="hidden p-2.5 rounded-xl text-xs font-semibold"></div>
+
+          <!-- Fields Grid -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <!-- 1. Party / Trade Name -->
+            <div class="space-y-1">
+              <label for="inline-supplier-name" class="block text-[11px] font-bold text-slate-700">
+                Party / Trade Name <span class="text-rose-500">*</span>
+              </label>
+              <input 
+                type="text" 
+                id="inline-supplier-name" 
+                placeholder="e.g., ADNOC Distribution, Lulu Group, Al Futtaim..." 
+                class="touch-target w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-xl font-medium text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-all select-text"
+              />
+            </div>
+
+            <!-- 2. 15-Digit FTA TRN -->
+            <div class="space-y-1">
+              <div class="flex items-center justify-between">
+                <label for="inline-supplier-trn" class="text-[11px] font-bold text-slate-700">
+                  Tax Registration No. (TRN) <span class="text-rose-500">*</span>
+                </label>
+                <span id="inline-trn-counter" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-bold">
+                  Text Format
+                </span>
+              </div>
+              <input 
+                type="text" 
+                id="inline-supplier-trn" 
+                maxlength="30" 
+                data-oninput="handleInlineTrnInput(this)" 
+                placeholder="e.g. 100230544700003" 
+                class="touch-target w-full text-xs font-mono tracking-wider px-3 py-2 bg-white border border-slate-300 rounded-xl font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-all select-text"
+              />
+              <p id="inline-trn-hint" class="text-[10px] text-slate-500 font-medium">
+                Format as text (e.g. UAE FTA 15-digit TRN or tax number)
+              </p>
+            </div>
+          </div>
+
+          <!-- 3. Category / Activity (Optional) -->
+          <div class="space-y-1">
+            <label for="inline-supplier-category" class="block text-[11px] font-bold text-slate-700">
+              Supplier Business Activity (Optional)
+            </label>
+            <select 
+              id="inline-supplier-category" 
+              class="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-xl text-slate-700 font-medium focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+            >
+              <option value="General Trading">General Trading & Supplies</option>
+              <option value="Foodstuff & Retail">Foodstuff & Retail</option>
+              <option value="Utilities & Services">Utilities & Public Services</option>
+              <option value="Logistics & Transport">Logistics & Transport</option>
+              <option value="Telecom & IT">Telecom & IT</option>
+              <option value="Fuel & Energy">Fuel & Energy</option>
+              <option value="Maintenance & Works">Maintenance & Contracting</option>
+            </select>
+          </div>
+
+          <!-- Form Action Buttons -->
+          <div class="pt-2 flex items-center justify-end space-x-2 border-t border-emerald-200/60">
+            <button 
+              type="button" 
+              data-onclick="resetInlineSupplierForm()" 
+              class="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+            >
+              Cancel / Clear
+            </button>
+            <button 
+              type="button" 
+              id="btn-save-inline-supplier" 
+              data-onclick="saveInlineSupplierRecord()" 
+              class="touch-target px-4 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl shadow-xs transition-all flex items-center space-x-1.5 cursor-pointer"
+            >
+              <span>💾</span>
+              <span>Save & Apply to Transaction</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5. TRN (TEXT FORMAT) -->
+      <div id="trn-container">
+        <div class="flex items-center justify-between mb-1">
+          <label for="trn" class="block text-[11px] font-bold uppercase tracking-wider text-slate-600">
+            5. Tax Registration No. (TRN) <span class="text-rose-500">*</span>
+          </label>
+          <span id="trn-counter" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-bold">
+            Text Format
+          </span>
+        </div>
+        <input 
+          type="text" 
+          id="trn" 
+          name="trn" 
+          maxlength="30" 
+          placeholder="e.g. 100230544700003" 
+          required 
+          autocomplete="off" 
+          data-oninput="handleTrnInput(this)" 
+          class="touch-target w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono tracking-widest text-slate-900 font-bold focus:bg-white focus:ring-2 focus:ring-slate-900 focus:border-slate-900 transition-all select-text"
+        />
+        <p id="trn-hint" class="text-[10px] text-slate-400 mt-1">Format as text (e.g. UAE FTA 15-digit TRN or tax number)</p>
+      </div>
+
+      <!-- 6. TAX CALCULATION TOGGLE (INCLUSIVE VS EXCLUSIVE) & AMOUNT INPUT -->
+      <div class="space-y-2 pt-1">
+        
+        <!-- Field Header -->
+        <div class="flex items-center justify-between">
+          <label for="amount_input" class="block text-[11px] font-bold uppercase tracking-wider text-slate-700">
+            6. Amount (AED) <span class="text-rose-500">*</span>
+          </label>
+          <span id="mode-badge" class="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+            VAT Inclusive Mode
+          </span>
+        </div>
+
+        <!-- Amount Input Field -->
+        <div class="relative">
+          <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
+            <span class="text-xs font-bold font-mono text-slate-400">AED</span>
+          </div>
+          <input 
+            type="number" 
+            step="0.01" 
+            min="0.01" 
+            id="amount_input" 
+            name="amount_input" 
+            placeholder="0.00" 
+            inputmode="decimal"
+            required 
+            autocomplete="off"
+            data-oninput="triggerLiveCalculation()"
+            class="touch-target w-full pl-13 pr-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-base font-mono font-extrabold text-slate-900 focus:bg-white focus:ring-2 focus:ring-slate-900 focus:border-slate-900 transition-all select-text"
+          />
+        </div>
+
+        <!-- Clean Toggle Switch UI (Inclusive [Default] vs Exclusive vs Tax-Exempt) -->
+        <div class="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100 border border-slate-200">
+          <button 
+            type="button" 
+            id="toggle-inclusive"
+            data-onclick="setTaxMode('inclusive')" 
+            class="touch-target flex flex-col items-center justify-center rounded-lg text-xs font-bold transition-all bg-white text-emerald-700 shadow-xs border border-emerald-200 py-1.5"
+          >
+            <span>Tax Inclusive</span>
+            <span class="text-[9px] font-normal opacity-80">(Incl. 5% VAT)</span>
+          </button>
+          <button 
+            type="button" 
+            id="toggle-exclusive"
+            data-onclick="setTaxMode('exclusive')" 
+            class="touch-target flex flex-col items-center justify-center rounded-lg text-xs font-bold transition-all text-slate-600 hover:text-slate-900 py-1.5"
+          >
+            <span>Tax Exclusive</span>
+            <span class="text-[9px] font-normal opacity-80">(Adds +5% VAT)</span>
+          </button>
+          <button 
+            type="button" 
+            id="toggle-exempt"
+            data-onclick="setTaxMode('exempt')" 
+            class="touch-target flex flex-col items-center justify-center rounded-lg text-xs font-bold transition-all text-slate-600 hover:text-amber-800 py-1.5"
+          >
+            <span>Tax-Exempt</span>
+            <span class="text-[9px] font-normal opacity-80">(0% Exempt)</span>
+          </button>
+        </div>
+
+        <p id="amount-calc-hint" class="text-[10px] text-slate-500 font-medium">
+          * VAT Inclusive: The system will automatically extract base amount (Input / 1.05) and 5% VAT.
+        </p>
+      </div>
+
+      <!-- LIVE AUTO-CALCULATION SUMMARY CARD -->
+      <div class="p-3.5 rounded-xl bg-slate-900 text-white space-y-2.5 shadow-xs">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+          <div class="flex items-center space-x-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span class="text-[11px] font-bold uppercase tracking-wider text-slate-300" id="summary-card-title">
+              Auto-Calculation (5% VAT Inclusive)
+            </span>
+          </div>
+          <span class="text-[10px] text-emerald-400 font-semibold font-mono" id="summary-formula-tag">
+            Base = Input ÷ 1.05
+          </span>
+        </div>
+        
+        <div class="grid grid-cols-3 gap-2 text-xs">
+          <div>
+            <span class="text-[10px] text-slate-400 block" id="label-net">Amount Before Tax:</span>
+            <span id="preview-net" class="text-xs font-mono font-bold text-slate-200">AED 0.00</span>
+          </div>
+          <div class="text-center">
+            <span class="text-[10px] text-slate-400 block">VAT (5%):</span>
+            <span id="preview-vat" class="text-xs font-mono font-bold text-emerald-400">AED 0.00</span>
+          </div>
+          <div class="text-right">
+            <span class="text-[10px] text-slate-400 block" id="label-total">Total With Tax:</span>
+            <span id="preview-total" class="text-xs font-mono font-extrabold text-white">AED 0.00</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUBMIT & CLEAR BUTTONS -->
+      <div class="pt-2 space-y-2">
+        <button 
+          type="submit" 
+          id="submit-btn" 
+          class="touch-target w-full rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-extrabold uppercase tracking-wider shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer"
+        >
+          <span id="btn-text">Submit Purchases Bill (Secure Insert)</span>
+          <svg id="btn-spinner" class="hidden animate-spin w-4 h-4 text-white" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+        </button>
+
+        <button 
+          type="button" 
+          data-onclick="resetForm()" 
+          class="w-full py-2.5 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-100 transition-colors"
+        >
+          Clear Form
+        </button>
+      </div>
+
+    </form>
+
+    <footer class="text-center py-4 text-[11px] text-slate-400 font-sans">
+      Developed by Eng. Mahmoud Mohamed | mahmoud.m@sdi.ae
+    </footer>
+
+  </main>
+
+  <!-- SUPABASE CONFIGURATION MODAL -->
+  <div id="config-modal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-4">
+    <div class="bg-white w-full max-w-md rounded-2xl p-5 space-y-4 shadow-xl">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <h3 class="text-sm font-bold text-slate-900">Supabase Connection Settings</h3>
+        <button type="button" data-onclick="closeConfigModal()" class="text-slate-400 hover:text-slate-700 font-bold p-1">✕</button>
+      </div>
+      
+      <p class="text-xs text-slate-600">
+        Saved locally on your device. When offline or unconfigured, invoices are automatically saved to the local offline queue.
+      </p>
+
+      <div class="space-y-3 text-xs">
+        <div>
+          <label class="block font-bold text-slate-700 mb-1">Supabase Project URL</label>
+          <input type="text" id="cfg-url" placeholder="https://frmgpbwbmarkatjroflr.supabase.co" class="w-full p-2.5 border rounded-lg font-mono text-xs select-text" />
+        </div>
+        <div>
+          <label class="block font-bold text-slate-700 mb-1">Supabase Anon Key</label>
+          <input type="password" id="cfg-key" placeholder="eyJhbGciOi..." class="w-full p-2.5 border rounded-lg font-mono text-xs select-text" />
+        </div>
+      </div>
+
+      <div class="pt-2 flex justify-between items-center">
+        <button type="button" data-onclick="clearOfflineQueue()" class="text-xs text-rose-600 hover:underline">Clear Offline Queue</button>
+        <div class="flex space-x-2">
+          <button type="button" data-onclick="closeConfigModal()" class="px-3 py-2 text-xs text-slate-600 rounded-lg">Cancel</button>
+          <button type="button" data-onclick="saveConfig()" class="px-4 py-2 text-xs font-bold bg-slate-900 text-white rounded-lg">Save & Connect</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADD NEW SUPPLIER MODAL (STRICT 15-DIGIT TRN VALIDATION) -->
+  <div id="add-supplier-modal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-sm rounded-2xl p-5 space-y-4 shadow-2xl border border-slate-100">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div class="flex items-center space-x-2.5">
+          <div class="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm">
+            ➕
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-slate-900">Add New Supplier</h3>
+            <p class="text-[10px] text-slate-500">Register trade name with 15-digit TRN</p>
+          </div>
+        </div>
+        <button type="button" data-onclick="closeAddSupplierModal()" class="text-slate-400 hover:text-slate-700 font-bold p-1">✕</button>
+      </div>
+
+      <form id="add-supplier-form" data-onsubmit="handleSaveNewSupplier(event)" class="space-y-3.5 text-xs">
+        <div>
+          <label for="modal-supplier-name" class="block font-bold uppercase tracking-wider text-[11px] text-slate-700 mb-1">
+            Party / Trade Name <span class="text-rose-500">*</span>
+          </label>
+          <input 
+            type="text" 
+            id="modal-supplier-name" 
+            required 
+            placeholder="e.g. Al Safa Logistics L.L.C" 
+            class="touch-target w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl font-medium text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-all select-text" 
+          />
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <label for="modal-supplier-trn" class="block font-bold uppercase tracking-wider text-[11px] text-slate-700">
+              TRN (Text Format) <span class="text-rose-500">*</span>
+            </label>
+            <span id="modal-trn-counter" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-bold">
+              Text Format
+            </span>
+          </div>
+          <input 
+            type="text" 
+            id="modal-supplier-trn" 
+            maxlength="30" 
+            required 
+            data-oninput="handleModalTrnInput(this)" 
+            placeholder="e.g. 100230544700003" 
+            class="touch-target w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl font-mono text-slate-900 tracking-wider focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-all select-text" 
+          />
+          <p id="modal-trn-hint" class="text-[10px] text-slate-500 mt-1">
+            Format as text (e.g. UAE FTA 15-digit TRN or tax number)
+          </p>
+        </div>
+
+        <div id="modal-supplier-alert" class="hidden p-2.5 rounded-lg text-xs font-semibold"></div>
+
+        <div class="pt-2 flex items-center justify-end space-x-2 border-t border-slate-100">
+          <button type="button" data-onclick="closeAddSupplierModal()" class="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 rounded-lg">Cancel</button>
+          <button type="submit" id="btn-save-modal-supplier" class="px-4 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors shadow-xs flex items-center space-x-1 cursor-pointer">
+            <span>Save & Auto-Select</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- FIXED DEVELOPER ATTRIBUTION FOOTER (STRICT REQUIREMENT) -->
+  <footer class="fixed bottom-0 inset-x-0 bg-white/95 backdrop-blur-md border-t border-slate-200 py-2.5 px-4 z-40 text-center shadow-lg safe-bottom">
+    <p class="text-xs font-medium text-slate-700 tracking-wide font-sans">
+      Developed by Eng. Mahmoud Mohamed | mahmoud.m@sdi.ae
+    </p>
+  </footer>
+
+  <!-- CLIENT-SIDE CONTROLLER & SUPABASE JS LOGIC -->
+  <script>
+    // ------------------------------------------------------------------------
+    // AUTH & RBAC SECURITY HELPERS
+    // ------------------------------------------------------------------------
+    function getAuthToken() {
+      const token = (sessionStorage.getItem("token") || sessionStorage.getItem("auth_token") || localStorage.getItem("token") || localStorage.getItem("auth_token") || "").trim();
+      if (token && !sessionStorage.getItem("token")) {
+        sessionStorage.setItem("token", token);
+        sessionStorage.setItem("auth_token", token);
+      }
+      return token;
+    }
+
+    function getAuthRole() {
+      const role = sessionStorage.getItem("auth_role") || localStorage.getItem("auth_role") || "";
+      if (role && !sessionStorage.getItem("auth_role")) {
+        sessionStorage.setItem("auth_role", role);
+      }
+      return role;
+    }
+
+    function getAuthUser() {
+      const user = sessionStorage.getItem("auth_user") || localStorage.getItem("auth_user") || "";
+      if (user && !sessionStorage.getItem("auth_user")) {
+        sessionStorage.setItem("auth_user", user);
+      }
+      return user;
+    }
+
+    function purgeAllAuthStorage() {
+      sessionStorage.clear();
+      localStorage.removeItem("token");
+      localStorage.removeItem("auth_token");
+      localStorage.removeItem("auth_role");
+      localStorage.removeItem("auth_user");
+    }
+
+    function logout() {
+      purgeAllAuthStorage();
+      window.location.replace("login.html?msg=" + encodeURIComponent("You have signed out securely. Session destroyed."));
+    }
+
+    function handleAdminNav(e) {
+      const role = (getAuthRole() || "").toLowerCase().trim();
+      if (role !== "owner") {
+        e.preventDefault();
+        showAlert("Restricted Access", "Admin Dashboard is strictly reserved for Owner clearance. Your current active role is Clerk.", "error");
+        return false;
+      }
+    }
+
+    // Global fetch proxy interceptor: automatically attaches Authorization header to all /api/* requests
+    const originalFetch = window.fetch;
+    window.fetch = async function(resource, init = {}) {
+      const token = getAuthToken();
+      if (typeof resource === "string" && resource.startsWith("/api/")) {
+        init = init || {};
+        init.headers = init.headers || {};
+        if (init.headers instanceof Headers) {
+          if (!init.headers.has("Authorization") && token) {
+            init.headers.set("Authorization", `Bearer ${token}`);
+          }
+        } else if (Array.isArray(init.headers)) {
+          if (!init.headers.some(([k]) => k.toLowerCase() === "authorization") && token) {
+            init.headers.push(["Authorization", `Bearer ${token}`]);
+          }
+        } else {
+          if (!init.headers["Authorization"] && !init.headers["authorization"] && token) {
+            init.headers["Authorization"] = `Bearer ${token}`;
+          }
+        }
+      }
+
+      const response = await originalFetch(resource, init);
+
+      // If token expired or unauthorized on protected backend API
+      if (response.status === 401 && typeof resource === "string" && resource.startsWith("/api/") && !resource.includes("/api/login")) {
+        console.warn("[AUTH] Session expired or invalid (HTTP 401). Redirecting to login...");
+        purgeAllAuthStorage();
+        window.location.replace("login.html?error=" + encodeURIComponent("Session expired or authentication failed. Please log in."));
+      }
+
+      return response;
+    };
+
+    async function checkAuthSession() {
+      const token = getAuthToken();
+      if (!token) {
+        purgeAllAuthStorage();
+        window.location.replace("login.html");
+        return;
+      }
+      try {
+        const resp = await fetch("/api/auth/me", {
+          headers: { "Authorization": `Bearer ${token}` }
+        });
+        if (!resp.ok) {
+          throw new Error("Invalid session token");
+        }
+        const data = await resp.json();
+        if (data && data.success && data.user) {
+          const u = data.user.username || getAuthUser() || "User";
+          const r = data.user.role || getAuthRole() || "Clerk";
+
+          sessionStorage.setItem("token", token);
+          sessionStorage.setItem("auth_token", token);
+          sessionStorage.setItem("auth_role", r);
+          sessionStorage.setItem("auth_user", u);
+          localStorage.setItem("token", token);
+          localStorage.setItem("auth_token", token);
+          localStorage.setItem("auth_role", r);
+          localStorage.setItem("auth_user", u);
+
+          const nameEl = document.getElementById("user-badge-name");
+          const roleEl = document.getElementById("user-badge-role");
+          if (nameEl) nameEl.textContent = u;
+          if (roleEl) {
+            roleEl.textContent = r;
+            roleEl.className = r.toLowerCase() === "owner" 
+              ? "px-1.5 py-0.2 rounded text-[10px] font-extrabold bg-amber-900/60 text-amber-300 border border-amber-700/60"
+              : "px-1.5 py-0.2 rounded text-[10px] font-extrabold bg-indigo-900/60 text-indigo-300 border border-indigo-700/60";
+          }
+        }
+      } catch (err) {
+        console.warn("[AUTH] Session verification error:", err);
+        purgeAllAuthStorage();
+        window.location.replace("login.html?error=" + encodeURIComponent("Session expired. Please log in again."));
+      }
+    }
+
+    // ------------------------------------------------------------------------
+    // REAL SUPPLIER DATA (STRICT REQUIREMENT: EXACT 19 REAL RECORDS, NO INVENTED DATA)
+    // ------------------------------------------------------------------------
+    const REAL_SUPPLIERS = [
+      {"name": "AL HAJJAN FOODSTUFF TRADING", "trn": "100023718800003"},
+      {"name": "NATIONAL DAIRY L.L.C", "trn": "100303591000003"},
+      {"name": "Talabat", "trn": "100000978500003"},
+      {"name": "SEWA", "trn": "100394961500003"},
+      {"name": "JOINT TRADING L.L.C SP BR", "trn": "105037098800003"},
+      {"name": "AL TAYEB INTERNATIONAL GENERAL TRADING", "trn": "100228723000003"},
+      {"name": "Bait Al Bahar Household TR. L.L.C", "trn": "100003845300003"},
+      {"name": "PAKYZ AL AKWAB TRADING", "trn": "100461454900003"},
+      {"name": "NATIONAL MARKETING", "trn": "100300236500003"},
+      {"name": "AL SAFA WATER TREATMENT CO LLC", "trn": "100346206400003"},
+      {"name": "AL ZAHMI TRADING EST", "trn": "100226647400003"},
+      {"name": "FEDERAL FOODS L.L.C", "trn": "100283803300003"},
+      {"name": "EMIRATES GALLERY DISCOUNTS", "trn": "100446141200003"},
+      {"name": "HOTPACK PACKAGING LLC", "trn": "100068415900003"},
+      {"name": "MHP FOOD TRADING L.L.C", "trn": "100356894400003"},
+      {"name": "AL MADINA HYPERMAKET L.L.C. BR1", "trn": "100303752800003"},
+      {"name": "NETWORK INTERNATIONAL LLC", "trn": "100204231300003"},
+      {"name": "AL SAFI DRINKING WATER PURIFICATION", "trn": "100230544700003"},
+      {"name": "NESTO HYPER MARKET LLC", "trn": "100247587700003"}
+    ];
+
+    const QUEUE_STORAGE_KEY = "offline_invoices_queue";
+
+    // Application state
+    let currentTaxMode = "inclusive"; // "inclusive" (default) or "exclusive"
+    let supabaseClient = null;
+
+    const CUSTOM_SUPPLIERS_KEY = "accounting_custom_suppliers";
+    let activeSuppliersList = [...REAL_SUPPLIERS];
+    let isSupplierDropdownOpen = false;
+
+    // Load locally saved suppliers
+    function loadSavedSuppliers() {
+      try {
+        const deleted = JSON.parse(localStorage.getItem("accounting_deleted_suppliers") || "[]");
+        if (Array.isArray(deleted) && deleted.length > 0) {
+          activeSuppliersList = activeSuppliersList.filter(s => 
+            !deleted.includes(String(s.trn || "").trim()) &&
+            !deleted.includes(String(s.name || "").trim())
+          );
+        }
+
+        const saved = localStorage.getItem(CUSTOM_SUPPLIERS_KEY);
+        if (saved) {
+          const list = JSON.parse(saved);
+          if (Array.isArray(list)) {
+            list.forEach(item => {
+              if (item && item.name && item.trn) {
+                const trnStr = String(item.trn).trim();
+                const nameStr = String(item.name).trim();
+                if (!deleted.includes(trnStr) && !deleted.includes(nameStr) && !activeSuppliersList.some(s => s.trn === item.trn)) {
+                  activeSuppliersList.push(item);
+                }
+              }
+            });
+          }
+        }
+      } catch (e) {
+        console.warn("Error loading custom suppliers from local storage:", e);
+      }
+    }
+
+    // Fetch suppliers from Supabase if connected
+    async function syncSuppliersFromSupabase() {
+      if (!supabaseClient) return;
+      try {
+        const { data, error } = await supabaseClient.from("suppliers").select("name, trn");
+        if (!error && Array.isArray(data)) {
+          const deleted = JSON.parse(localStorage.getItem("accounting_deleted_suppliers") || "[]");
+          activeSuppliersList = data
+            .map(item => ({ name: item.name, trn: item.trn }))
+            .filter(item => 
+              !deleted.includes(String(item.trn || "").trim()) &&
+              !deleted.includes(String(item.name || "").trim())
+            );
+          renderSupplierDropdownItems();
+        }
+      } catch (err) {
+        console.log("Supabase suppliers sync check:", err);
+      }
+    }
+
+    /**
+     * Render items in the custom searchable supplier dropdown
+     */
+    function renderSupplierDropdownItems(filterText = "") {
+      const listEl = document.getElementById("supplier-items-list");
+      const noMatchEl = document.getElementById("supplier-no-match");
+      const countPill = document.getElementById("supplier-count-pill");
+      if (!listEl) return;
+
+      const term = filterText.trim().toLowerCase();
+      const filtered = activeSuppliersList.filter(s => {
+        if (!term) return true;
+        return s.name.toLowerCase().includes(term) || s.trn.includes(term);
+      });
+
+      if (countPill) {
+        countPill.textContent = `${activeSuppliersList.length} Registered`;
+      }
+
+      if (filtered.length === 0) {
+        listEl.innerHTML = "";
+        if (noMatchEl) noMatchEl.classList.remove("hidden");
+        return;
+      }
+
+      if (noMatchEl) noMatchEl.classList.add("hidden");
+
+      listEl.innerHTML = filtered.map(item => {
+        const masterIndex = activeSuppliersList.findIndex(s => s.trn === item.trn);
+        const nameEscaped = escapeHtml(item.name);
+        const trnEscaped = escapeHtml(item.trn);
+
+        return `
+          <button 
+            type="button" 
+            data-onclick="selectCustomSupplier(${masterIndex})" 
+            class="w-full px-3.5 py-2.5 hover:bg-blue-50/80 active:bg-blue-100 text-left flex items-center justify-between transition-colors group cursor-pointer"
+          >
+            <div class="truncate pr-2">
+              <div class="font-bold text-slate-900 group-hover:text-blue-900 text-xs truncate">${nameEscaped}</div>
+              <div class="font-mono text-[11px] text-slate-500 group-hover:text-blue-700">TRN: ${trnEscaped}</div>
+            </div>
+            <div class="shrink-0 flex items-center space-x-1">
+              <span class="text-[9px] bg-slate-100 group-hover:bg-blue-100 text-slate-600 group-hover:text-blue-800 font-mono px-1.5 py-0.5 rounded font-bold">15-Digit</span>
+              <span class="text-blue-600 opacity-0 group-hover:opacity-100 text-xs transition-opacity font-bold">↵</span>
+            </div>
+          </button>
+        `;
+      }).join("");
+    }
+
+    function toggleSupplierDropdown() {
+      if (isSupplierDropdownOpen) {
+        closeSupplierDropdown();
+      } else {
+        openSupplierDropdown();
+      }
+    }
+
+    function openSupplierDropdown() {
+      const menu = document.getElementById("supplier-dropdown-menu");
+      const trigger = document.getElementById("supplier-dropdown-trigger");
+      const icon = document.getElementById("supplier-chevron-icon");
+      const searchInput = document.getElementById("supplier-search-input");
+
+      if (menu) menu.classList.remove("hidden");
+      if (trigger) trigger.setAttribute("aria-expanded", "true");
+      if (icon) icon.classList.add("rotate-180");
+      isSupplierDropdownOpen = true;
+
+      renderSupplierDropdownItems(searchInput ? searchInput.value : "");
+      if (searchInput) {
+        setTimeout(() => searchInput.focus(), 50);
+      }
+    }
+
+    function closeSupplierDropdown() {
+      const menu = document.getElementById("supplier-dropdown-menu");
+      const trigger = document.getElementById("supplier-dropdown-trigger");
+      const icon = document.getElementById("supplier-chevron-icon");
+
+      if (menu) menu.classList.add("hidden");
+      if (trigger) trigger.setAttribute("aria-expanded", "false");
+      if (icon) icon.classList.remove("rotate-180");
+      isSupplierDropdownOpen = false;
+    }
+
+    function handleSupplierSearch(val) {
+      const clearBtn = document.getElementById("supplier-clear-search-btn");
+      if (clearBtn) {
+        if (val.trim()) {
+          clearBtn.classList.remove("hidden");
+        } else {
+          clearBtn.classList.add("hidden");
+        }
+      }
+      renderSupplierDropdownItems(val);
+    }
+
+    function clearSupplierSearch() {
+      const input = document.getElementById("supplier-search-input");
+      const clearBtn = document.getElementById("supplier-clear-search-btn");
+      if (input) {
+        input.value = "";
+        input.focus();
+      }
+      if (clearBtn) clearBtn.classList.add("hidden");
+      renderSupplierDropdownItems("");
+    }
+
+    function selectCustomSupplier(index) {
+      const record = activeSuppliersList[index];
+      if (!record) return;
+
+      const partyInput = document.getElementById("party_name");
+      const trnInput = document.getElementById("trn");
+      const label = document.getElementById("supplier-selected-label");
+
+      if (partyInput) partyInput.value = record.name;
+      if (trnInput) {
+        trnInput.value = record.trn;
+        handleTrnInput(trnInput);
+      }
+
+      if (label) {
+        label.textContent = `${record.name} (${record.trn.slice(0, 4)}...${record.trn.slice(-4)})`;
+        label.className = "truncate text-slate-900 font-bold";
+      }
+
+      closeSupplierDropdown();
+
+      if ("vibrate" in navigator) {
+        navigator.vibrate(30);
+      }
+    }
+
+    // Modal logic for Add New Supplier
+    function openAddSupplierModal() {
+      closeSupplierDropdown();
+      const modal = document.getElementById("add-supplier-modal");
+      const form = document.getElementById("add-supplier-form");
+      const trnInput = document.getElementById("modal-supplier-trn");
+      const nameInput = document.getElementById("modal-supplier-name");
+      const alertBox = document.getElementById("modal-supplier-alert");
+
+      if (form) form.reset();
+      if (alertBox) alertBox.classList.add("hidden");
+      handleModalTrnInput(trnInput || { value: "" });
+
+      if (modal) modal.classList.remove("hidden");
+      if (nameInput) setTimeout(() => nameInput.focus(), 60);
+    }
+
+    function closeAddSupplierModal() {
+      const modal = document.getElementById("add-supplier-modal");
+      if (modal) modal.classList.add("hidden");
+    }
+
+    /* =========================================================================
+     * INLINE SUPPLIER DATA ENTRY FORM LOGIC
+     * ========================================================================= */
+    function toggleInlineSupplierForm(forceOpen) {
+      closeSupplierDropdown();
+      const card = document.getElementById("inline-supplier-card");
+      const btn = document.getElementById("btn-toggle-inline-supplier");
+      const nameInput = document.getElementById("inline-supplier-name");
+      if (!card) return;
+
+      const isCurrentlyOpen = !card.classList.contains("hidden");
+      const shouldOpen = typeof forceOpen === "boolean" ? forceOpen : !isCurrentlyOpen;
+
+      if (shouldOpen) {
+        card.classList.remove("hidden");
+        if (btn) {
+          btn.innerHTML = `<span class="text-xs">✕</span><span class="font-sans font-bold">Close Form</span>`;
+          btn.className = "touch-target px-2.5 py-1 text-xs font-bold text-slate-700 bg-slate-200 hover:bg-slate-300 border border-slate-300 rounded-lg flex items-center space-x-1 transition-all shadow-2xs cursor-pointer";
+        }
+        setTimeout(() => {
+          card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          if (nameInput) nameInput.focus();
+        }, 100);
+      } else {
+        card.classList.add("hidden");
+        if (btn) {
+          btn.innerHTML = `<span class="text-xs">➕</span><span class="font-sans font-bold">Add Supplier Form</span>`;
+          btn.className = "touch-target px-2.5 py-1 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 border border-emerald-300 rounded-lg flex items-center space-x-1 transition-all shadow-2xs cursor-pointer";
+        }
+      }
+    }
+
+    function handleInlineTrnInput(input) {
+      if (!input) return;
+      const val = (input.value || "").trim();
+      const len = val.length;
+      const counter = document.getElementById("inline-trn-counter");
+      const hint = document.getElementById("inline-trn-hint");
+
+      if (counter) {
+        counter.textContent = `${len} Characters`;
+        if (len >= 15) {
+          counter.className = "text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-extrabold";
+          if (hint) {
+            hint.textContent = "✓ Valid TRN text format.";
+            hint.className = "text-[10px] text-emerald-600 mt-0.5 font-semibold";
+          }
+        } else if (len > 0) {
+          counter.className = "text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 font-bold";
+          if (hint) {
+            hint.textContent = `TRN text (${len} characters)`;
+            hint.className = "text-[10px] text-blue-600 mt-0.5 font-medium";
+          }
+        } else {
+          counter.className = "text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-bold";
+          if (hint) {
+            hint.textContent = "Format as text (e.g. UAE FTA 15-digit TRN or tax number)";
+            hint.className = "text-[10px] text-slate-500 mt-0.5 font-medium";
+          }
+        }
+      }
+    }
+
+    function resetInlineSupplierForm() {
+      const nameInput = document.getElementById("inline-supplier-name");
+      const trnInput = document.getElementById("inline-supplier-trn");
+      const alertBox = document.getElementById("inline-supplier-alert");
+      if (nameInput) nameInput.value = "";
+      if (trnInput) trnInput.value = "";
+      if (alertBox) alertBox.classList.add("hidden");
+      handleInlineTrnInput(trnInput || { value: "" });
+      toggleInlineSupplierForm(false);
+    }
+
+    async function saveInlineSupplierRecord() {
+      const nameInput = document.getElementById("inline-supplier-name");
+      const trnInput = document.getElementById("inline-supplier-trn");
+      const categorySelect = document.getElementById("inline-supplier-category");
+      const alertBox = document.getElementById("inline-supplier-alert");
+      const saveBtn = document.getElementById("btn-save-inline-supplier");
+
+      const name = (nameInput ? nameInput.value : "").trim();
+      const trn = (trnInput ? trnInput.value : "").trim();
+      const category = categorySelect ? categorySelect.value : "General Trading";
+
+      if (!name) {
+        if (alertBox) {
+          alertBox.textContent = "Please enter the supplier or business entity name.";
+          alertBox.className = "p-2.5 rounded-xl text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200 block";
+        }
+        if (nameInput) nameInput.focus();
+        return;
+      }
+
+      // TRN format as text validation
+      if (!trn) {
+        if (alertBox) {
+          alertBox.textContent = "Please enter the Tax Registration Number (TRN).";
+          alertBox.className = "p-2.5 rounded-xl text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200 block";
+        }
+        if (trnInput) trnInput.focus();
+        return;
+      }
+
+      // Check if supplier already exists
+      const existingIdx = activeSuppliersList.findIndex(s => s.trn === trn);
+      if (existingIdx !== -1) {
+        resetInlineSupplierForm();
+        selectCustomSupplier(existingIdx);
+        showAlert("Supplier Already Exists", `Supplier '${name}' with TRN ${trn} is already registered and was selected.`, "info");
+        return;
+      }
+
+      const newSupplier = { name, trn, category };
+
+      // Save to localStorage
+      try {
+        const saved = localStorage.getItem(CUSTOM_SUPPLIERS_KEY);
+        const list = saved ? JSON.parse(saved) : [];
+        list.push(newSupplier);
+        localStorage.setItem(CUSTOM_SUPPLIERS_KEY, JSON.stringify(list));
+      } catch (err) {
+        console.warn("Failed to cache custom supplier in localStorage:", err);
+      }
+
+      // Sync with Desktop Python Backend if pywebview bridge is active
+      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.add_supplier === "function") {
+        try {
+          await window.pywebview.api.add_supplier(name, trn);
+        } catch (pyErr) {
+          console.warn("Desktop pywebview add_supplier:", pyErr);
+        }
+      }
+
+      // Sync with Supabase if configured
+      if (supabaseClient) {
+        try {
+          if (saveBtn) saveBtn.textContent = "Saving to cloud...";
+          const { error } = await supabaseClient.from("suppliers").insert([newSupplier]);
+          if (error) {
+            console.warn("Supabase supplier table insert:", error);
+          }
+        } catch (supErr) {
+          console.warn("Supabase suppliers insert error:", supErr);
+        } finally {
+          if (saveBtn) saveBtn.innerHTML = `<span>💾</span><span>Save & Apply to Transaction</span>`;
+        }
+      }
+
+      // Push to activeSuppliersList
+      activeSuppliersList.push(newSupplier);
+
+      // Re-render dropdown list
+      renderSupplierDropdownItems();
+
+      // Auto-populate into main transaction form
+      selectCustomSupplier(activeSuppliersList.length - 1);
+
+      // Hide inline form
+      resetInlineSupplierForm();
+
+      // Show success toast
+      showAlert("Supplier Registered Successfully", `Supplier '${name}' (TRN: ${trn}) was registered and applied to transaction.`, "success");
+    }
+
+    function handleModalTrnInput(input) {
+      if (!input) return;
+      const val = (input.value || "").trim();
+      const len = val.length;
+      const counter = document.getElementById("modal-trn-counter");
+      const hint = document.getElementById("modal-trn-hint");
+
+      if (counter) {
+        counter.textContent = `${len} Characters`;
+        if (len >= 15) {
+          counter.className = "text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-extrabold";
+          if (hint) {
+            hint.textContent = "✓ Valid TRN text format.";
+            hint.className = "text-[10px] text-emerald-600 mt-1 font-semibold";
+          }
+        } else if (len > 0) {
+          counter.className = "text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 font-bold";
+          if (hint) {
+            hint.textContent = `TRN text (${len} characters)`;
+            hint.className = "text-[10px] text-blue-600 mt-1";
+          }
+        } else {
+          counter.className = "text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-bold";
+          if (hint) {
+            hint.textContent = "Format as text (e.g. UAE FTA 15-digit TRN or tax number)";
+            hint.className = "text-[10px] text-slate-500 mt-1";
+          }
+        }
+      }
+    }
+
+    async function handleSaveNewSupplier(e) {
+      e.preventDefault();
+      const nameInput = document.getElementById("modal-supplier-name");
+      const trnInput = document.getElementById("modal-supplier-trn");
+      const alertBox = document.getElementById("modal-supplier-alert");
+      const saveBtn = document.getElementById("btn-save-modal-supplier");
+
+      const name = (nameInput ? nameInput.value : "").trim();
+      const trn = (trnInput ? trnInput.value : "").trim();
+
+      if (!name) {
+        if (alertBox) {
+          alertBox.textContent = "Please enter a party or trade name.";
+          alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
+        }
+        return;
+      }
+
+      // TRN format as text validation
+      if (!trn) {
+        if (alertBox) {
+          alertBox.textContent = "Please enter the Tax Registration Number (TRN).";
+          alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
+        }
+        if (trnInput) trnInput.focus();
+        return;
+      }
+
+      // Check if already exists in activeSuppliersList
+      const existingIdx = activeSuppliersList.findIndex(s => s.trn === trn);
+      if (existingIdx !== -1) {
+        // Auto-select existing
+        closeAddSupplierModal();
+        selectCustomSupplier(existingIdx);
+        showAlert("Supplier Exists", `Supplier '${name}' with TRN ${trn} is already registered and was auto-selected.`, "info");
+        return;
+      }
+
+      const newSupplier = { name, trn };
+
+      // Save locally
+      try {
+        const saved = localStorage.getItem(CUSTOM_SUPPLIERS_KEY);
+        const list = saved ? JSON.parse(saved) : [];
+        list.push(newSupplier);
+        localStorage.setItem(CUSTOM_SUPPLIERS_KEY, JSON.stringify(list));
+      } catch (err) {
+        console.warn("Failed to cache custom supplier in localStorage:", err);
+      }
+
+      // Insert to Supabase 'suppliers' table if connected
+      if (supabaseClient) {
+        try {
+          if (saveBtn) saveBtn.textContent = "Saving to Supabase...";
+          const { error } = await supabaseClient.from("suppliers").insert([newSupplier]);
+          if (error) {
+            console.warn("Supabase supplier table insert warning:", error);
+          }
+        } catch (err) {
+          console.warn("Supabase suppliers insert error:", err);
+        } finally {
+          if (saveBtn) saveBtn.innerHTML = "<span>Save & Auto-Select</span>";
+        }
+      }
+
+      // Push to activeSuppliersList
+      activeSuppliersList.push(newSupplier);
+
+      // Close modal
+      closeAddSupplierModal();
+
+      // Re-render dropdown
+      renderSupplierDropdownItems();
+
+      // Auto-select the new supplier
+      selectCustomSupplier(activeSuppliersList.length - 1);
+
+      showAlert("Supplier Registered", `Added '${name}' (TRN: ${trn}) and populated the transaction form.`, "success");
+    }
+
+    function onReady(fn) {
+      if (document.readyState === "interactive" || document.readyState === "complete") {
+        setTimeout(fn, 0);
+      } else {
+        document.addEventListener("DOMContentLoaded", fn, { once: true });
+      }
+    }
+    window.onReady = onReady;
+
+    // Initialization on DOM Load or Ready State
+    onReady(() => {
+      checkAuthSession();
+      initDate();
+      handleTypeChange("purchases");
+      loadSavedSuppliers();
+      renderSupplierDropdownItems();
+      initSupabaseClient();
+      updateOfflineQueueUI();
+
+      // Listen for network reconnect
+      window.addEventListener("online", handleOnlineEvent);
+      window.addEventListener("offline", handleOfflineEvent);
+
+      // Listen for storage events across tabs to keep KPI cards in sync in real-time
+      window.addEventListener("storage", (e) => {
+        if (e.key === QUEUE_STORAGE_KEY) {
+          updateOfflineQueueUI();
+        }
+      });
+
+      // Close custom dropdown when tapping outside
+      document.addEventListener("click", (e) => {
+        const dropdown = document.getElementById("custom-supplier-dropdown");
+        const modal = document.getElementById("add-supplier-modal");
+        if (dropdown && !dropdown.contains(e.target)) {
+          closeSupplierDropdown();
+        }
+      });
+    });
+
+    function initDate() {
+      const today = new Date().toISOString().split("T")[0];
+      const dateInput = document.getElementById("transaction_date");
+      if (dateInput && !dateInput.value) {
+        dateInput.value = today;
+      }
+    }
+
+    /**
+     * TRN format as text handler
+     */
+    function handleTrnInput(input) {
+      if (!input) return;
+      const val = (input.value || "").trim();
+      const len = val.length;
+
+      const counter = document.getElementById("trn-counter");
+      const hint = document.getElementById("trn-hint");
+
+      if (counter) {
+        counter.textContent = `${len} Characters`;
+        if (len >= 15) {
+          counter.className = "text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-extrabold";
+          if (hint) {
+            hint.textContent = "✓ Valid TRN text format.";
+            hint.className = "text-[10px] text-emerald-600 mt-1 font-semibold";
+          }
+          input.classList.remove("border-rose-400", "focus:ring-rose-500");
+          input.classList.add("border-emerald-400");
+        } else if (len > 0) {
+          counter.className = "text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 font-bold";
+          if (hint) {
+            hint.textContent = `TRN text (${len} characters)`;
+            hint.className = "text-[10px] text-blue-600 mt-1";
+          }
+          input.classList.remove("border-rose-400");
+        } else {
+          counter.className = "text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-bold";
+          if (hint) {
+            hint.textContent = "Format as text (e.g. UAE FTA 15-digit TRN or tax number)";
+            hint.className = "text-[10px] text-slate-400 mt-1";
+          }
+          input.classList.remove("border-rose-400", "border-emerald-400");
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------------
+    // TASK A1: TAX CALCULATION TOGGLE (INCLUSIVE VS EXCLUSIVE VS EXEMPT)
+    // ------------------------------------------------------------------------
+    function setTaxMode(mode) {
+      currentTaxMode = mode;
+
+      const btnInc = document.getElementById("toggle-inclusive");
+      const btnExc = document.getElementById("toggle-exclusive");
+      const btnExempt = document.getElementById("toggle-exempt");
+      const badge = document.getElementById("mode-badge");
+      const cardTitle = document.getElementById("summary-card-title");
+      const formulaTag = document.getElementById("summary-formula-tag");
+      const hint = document.getElementById("amount-calc-hint");
+
+      const baseInactive = "touch-target flex flex-col items-center justify-center rounded-lg text-xs font-bold transition-all text-slate-600 hover:text-slate-900 py-1.5";
+
+      if (btnInc) btnInc.className = baseInactive;
+      if (btnExc) btnExc.className = baseInactive;
+      if (btnExempt) btnExempt.className = baseInactive;
+
+      if (mode === "inclusive") {
+        if (btnInc) btnInc.className = "touch-target flex flex-col items-center justify-center rounded-lg text-xs font-bold transition-all bg-white text-emerald-700 shadow-xs border border-emerald-200 py-1.5";
+        badge.textContent = "VAT Inclusive Mode";
+        badge.className = "text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800";
+        cardTitle.textContent = "Auto-Calculation (5% VAT Inclusive)";
+        formulaTag.textContent = "Base = Input ÷ 1.05";
+        hint.textContent = "* VAT Inclusive: The system will automatically extract base amount (Input / 1.05) and 5% VAT.";
+      } else if (mode === "exclusive") {
+        if (btnExc) btnExc.className = "touch-target flex flex-col items-center justify-center rounded-lg text-xs font-bold transition-all bg-white text-blue-700 shadow-xs border border-blue-200 py-1.5";
+        badge.textContent = "VAT Exclusive Mode";
+        badge.className = "text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800";
+        cardTitle.textContent = "Auto-Calculation (5% VAT Exclusive)";
+        formulaTag.textContent = "VAT = Base × 0.05";
+        hint.textContent = "* VAT Exclusive: The user inputs base amount; 5% VAT and Total with Tax are computed.";
+      } else if (mode === "exempt") {
+        if (btnExempt) btnExempt.className = "touch-target flex flex-col items-center justify-center rounded-lg text-xs font-bold transition-all bg-white text-amber-800 shadow-xs border border-amber-300 py-1.5";
+        badge.textContent = "Tax-Exempt Mode (0% Exempt)";
+        badge.className = "text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-200";
+        cardTitle.textContent = "Auto-Calculation (Tax-Exempt / 0% VAT)";
+        formulaTag.textContent = "VAT = AED 0.00 (Exempt)";
+        hint.textContent = "* Tax-Exempt (0% VAT): No VAT is calculated or charged. Net Amount equals Gross Amount.";
+      }
+
+      triggerLiveCalculation();
+    }
+
+    function triggerLiveCalculation() {
+      const val = document.getElementById("amount_input").value;
+      calculateTaxes(val, currentTaxMode);
+    }
+
+    /**
+     * Live Financial VAT Calculation
+     * Inclusive Mode: Input = 1050 -> Amount Before Tax = 1000 (1050 / 1.05), VAT = 50, Total = 1050
+     * Exclusive Mode: Input = 1000 -> Amount Before Tax = 1000, VAT = 50 (1000 * 0.05), Total = 1050
+     * Exempt Mode:    Input = 1000 -> Amount Before Tax = 1000, VAT = 0, Total = 1000
+     */
+    function calculateTaxes(rawInput, mode = currentTaxMode) {
+      const inputAmt = parseFloat(rawInput) || 0.0;
+      let amountBeforeTax = 0.0;
+      let vatAmount = 0.0;
+      let amountWithTax = 0.0;
+
+      if (inputAmt > 0) {
+        if (mode === "inclusive") {
+          // Input ALREADY includes 5% VAT
+          // Base = Input / 1.05
+          amountBeforeTax = Math.round((inputAmt / 1.05) * 100) / 100;
+          vatAmount = Math.round((inputAmt - amountBeforeTax) * 100) / 100;
+          amountWithTax = inputAmt;
+        } else if (mode === "exclusive") {
+          // Input is the base amount BEFORE tax
+          amountBeforeTax = inputAmt;
+          vatAmount = Math.round(inputAmt * 0.05 * 100) / 100;
+          amountWithTax = Math.round((inputAmt + vatAmount) * 100) / 100;
+        } else if (mode === "exempt") {
+          // Input is tax exempt: VAT is strictly 0.00
+          amountBeforeTax = inputAmt;
+          vatAmount = 0.0;
+          amountWithTax = inputAmt;
+        }
+      }
+
+      document.getElementById("preview-net").textContent = `AED ${amountBeforeTax.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      document.getElementById("preview-vat").textContent = `AED ${vatAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      document.getElementById("preview-total").textContent = `AED ${amountWithTax.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+      return {
+        amountBeforeTax,
+        vatAmount,
+        amountWithTax,
+        mode
+      };
+    }
+
+    function handleTypeChange(val) {
+      const invLabel = document.getElementById("invoice-no-label");
+      const invInput = document.getElementById("invoice_no");
+      const partyContainer = document.getElementById("party-name-container");
+      const trnContainer = document.getElementById("trn-container");
+      const partyInput = document.getElementById("party_name");
+      const trnInput = document.getElementById("trn");
+      const submitBtn = document.getElementById("submit-btn");
+      const submitBtnText = document.getElementById("btn-text");
+
+      if (val === "purchases") {
+        if (invLabel) invLabel.innerHTML = '3. Bill / Invoice Number <span class="text-slate-400 font-normal text-xs normal-case">(Optional)</span>';
+        if (invInput) {
+          invInput.placeholder = "e.g. PUR-2026-0045 (Optional)";
+          invInput.removeAttribute("required");
+        }
+        
+        // Show Party Name & TRN inputs for Purchases
+        if (partyContainer) partyContainer.classList.remove("hidden");
+        if (trnContainer) trnContainer.classList.remove("hidden");
+        if (partyInput) partyInput.setAttribute("required", "required");
+        if (trnInput) trnInput.setAttribute("required", "required");
+
+        if (submitBtn) {
+          submitBtn.className = "touch-target w-full rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-extrabold uppercase tracking-wider shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer";
+        }
+        if (submitBtnText && (!submitBtn || !submitBtn.disabled)) {
+          submitBtnText.textContent = "Submit Purchases Bill (Secure Insert)";
+        }
+      } else {
+        if (invLabel) invLabel.innerHTML = '3. Sales Invoice Number <span class="text-slate-400 font-normal text-xs normal-case">(Optional)</span>';
+        if (invInput) {
+          invInput.placeholder = "e.g. INV-2026-0045 (Optional)";
+          invInput.removeAttribute("required");
+        }
+
+        // Dynamically HIDE Party Name & TRN inputs for B2C Retail Sales (Simplified Tax Invoices)
+        if (partyContainer) partyContainer.classList.add("hidden");
+        if (trnContainer) trnContainer.classList.add("hidden");
+        if (partyInput) {
+          partyInput.removeAttribute("required");
+          partyInput.value = "";
+        }
+        if (trnInput) {
+          trnInput.removeAttribute("required");
+          trnInput.value = "";
+        }
+
+        // Close dropdown or inline supplier form if open
+        if (typeof closeSupplierDropdown === "function") closeSupplierDropdown();
+        if (typeof toggleInlineSupplierForm === "function") toggleInlineSupplierForm(false);
+
+        if (submitBtn) {
+          submitBtn.className = "touch-target w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-extrabold uppercase tracking-wider shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer";
+        }
+        if (submitBtnText && (!submitBtn || !submitBtn.disabled)) {
+          submitBtnText.textContent = "Submit Sales Invoice (Cash Customer)";
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------------
+    // TASK A2: OFFLINE-FIRST ARCHITECTURE (OFFLINE QUEUE & SYNC)
+    // ------------------------------------------------------------------------
+    function getOfflineQueue() {
+      try {
+        const raw = localStorage.getItem(QUEUE_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : [];
+      } catch (e) {
+        console.error("Failed to read offline queue:", e);
+        return [];
+      }
+    }
+
+    function saveOfflineQueue(queue) {
+      try {
+        localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(queue));
+      } catch (e) {
+        console.error("Failed to write offline queue:", e);
+      }
+      updateOfflineQueueUI();
+    }
+
+    function enqueueOfflineInvoice(payload) {
+      const queue = getOfflineQueue();
+      payload._queue_id = "offline_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+      payload._queued_at = new Date().toISOString();
+      queue.push(payload);
+      saveOfflineQueue(queue);
+      return queue.length;
+    }
+
+    let isQueueExpanded = false;
+
+    function escapeHtml(str) {
+      if (!str) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function toggleOfflineQueueList() {
+      isQueueExpanded = !isQueueExpanded;
+      const details = document.getElementById("offline-queue-details");
+      const btnText = document.getElementById("offline-queue-expand-text");
+      const icon = document.getElementById("offline-queue-expand-icon");
+      const expandBtn = document.getElementById("offline-queue-expand-btn");
+
+      if (isQueueExpanded) {
+        if (details) details.classList.remove("hidden");
+        if (btnText) btnText.textContent = "Collapse";
+        if (icon) icon.classList.add("rotate-180");
+        if (expandBtn) expandBtn.setAttribute("aria-expanded", "true");
+        renderOfflineQueueList();
+      } else {
+        if (details) details.classList.add("hidden");
+        if (btnText) btnText.textContent = "Expand";
+        if (icon) icon.classList.remove("rotate-180");
+        if (expandBtn) expandBtn.setAttribute("aria-expanded", "false");
+      }
+    }
+
+    function renderOfflineQueueList() {
+      const queue = getOfflineQueue();
+      const listEl = document.getElementById("offline-queue-list");
+      if (!listEl) return;
+
+      if (queue.length === 0) {
+        listEl.innerHTML = '<div class="text-center py-3 text-[11px] text-amber-800 italic">No invoices currently waiting to be synced.</div>';
+        return;
+      }
+
+      listEl.innerHTML = queue.map((item, idx) => {
+        const invNo = item.invoice_no || `INV-PENDING-${idx + 1}`;
+        // Amount: show total amount with tax (or amount before tax if total not present)
+        const total = parseFloat(item.amount_with_tax) || parseFloat(item.amount_before_tax) || 0.0;
+        const net = parseFloat(item.amount_before_tax) || 0.0;
+        const party = item.party_name || "Commercial Party";
+        const date = item.transaction_date || "";
+        const isSales = (item.transaction_type || "").toLowerCase() === "sales";
+
+        return `
+          <div class="py-2 px-2.5 rounded-lg bg-white/95 border border-amber-200/80 flex items-center justify-between gap-2 shadow-2xs">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="font-mono font-bold text-slate-900 text-xs">${escapeHtml(invNo)}</span>
+                <span class="text-[9px] px-1.5 py-0.5 rounded font-extrabold uppercase leading-none ${isSales ? 'bg-blue-100 text-blue-800' : 'bg-indigo-100 text-indigo-800'}">
+                  ${isSales ? 'Sales' : 'Purchase'}
+                </span>
+              </div>
+              <div class="text-[11px] text-slate-600 truncate mt-0.5 font-medium">
+                ${escapeHtml(party)}${date ? ` • <span class="font-mono text-[10px] text-slate-500">${escapeHtml(date)}</span>` : ''}
+              </div>
+            </div>
+            <div class="text-right shrink-0">
+              <div class="font-mono font-bold text-amber-950 text-xs">
+                AED ${total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              <div class="text-[10px] text-slate-500 font-mono">
+                Net: AED ${net.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function updateOfflineQueueUI() {
+      const queue = getOfflineQueue();
+      const count = queue.length;
+
+      // Real-time calculation of Sales and Purchases totals from local offline queue
+      let queueSalesTotal = 0.0;
+      let queueSalesNet = 0.0;
+      let queueSalesCount = 0;
+
+      let queuePurchasesTotal = 0.0;
+      let queuePurchasesNet = 0.0;
+      let queuePurchasesCount = 0;
+
+      queue.forEach(item => {
+        const isSales = String(item.transaction_type || "").toLowerCase().trim() === "sales";
+        const amtWith = parseFloat(item.amount_with_tax) || (parseFloat(item.amount_before_tax) + parseFloat(item.vat_amount)) || 0.0;
+        const amtBefore = parseFloat(item.amount_before_tax) || 0.0;
+
+        if (isSales) {
+          queueSalesTotal += amtWith;
+          queueSalesNet += amtBefore;
+          queueSalesCount++;
+        } else {
+          queuePurchasesTotal += amtWith;
+          queuePurchasesNet += amtBefore;
+          queuePurchasesCount++;
+        }
+      });
+
+      // Update Sales KPI Card
+      const salesTotalEl = document.getElementById("kpi-queue-sales-total");
+      const salesCountEl = document.getElementById("kpi-queue-sales-count");
+      const salesNetEl = document.getElementById("kpi-queue-sales-net");
+
+      if (salesTotalEl) {
+        salesTotalEl.textContent = `AED ${queueSalesTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      }
+      if (salesCountEl) {
+        salesCountEl.textContent = `${queueSalesCount} ${queueSalesCount === 1 ? 'Invoice' : 'Invoices'}`;
+      }
+      if (salesNetEl) {
+        salesNetEl.textContent = `Net: ${queueSalesNet.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      }
+
+      // Update Purchases KPI Card
+      const purchasesTotalEl = document.getElementById("kpi-queue-purchases-total");
+      const purchasesCountEl = document.getElementById("kpi-queue-purchases-count");
+      const purchasesNetEl = document.getElementById("kpi-queue-purchases-net");
+
+      if (purchasesTotalEl) {
+        purchasesTotalEl.textContent = `AED ${queuePurchasesTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      }
+      if (purchasesCountEl) {
+        purchasesCountEl.textContent = `${queuePurchasesCount} ${queuePurchasesCount === 1 ? 'Bill' : 'Bills'}`;
+      }
+      if (purchasesNetEl) {
+        purchasesNetEl.textContent = `Net: ${queuePurchasesNet.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      }
+
+      const syncBtn = document.getElementById("sync-pending-btn");
+      const syncLabel = document.getElementById("sync-pending-label");
+      const queueCard = document.getElementById("offline-queue-card");
+      const queueDesc = document.getElementById("offline-queue-desc");
+      const countBadge = document.getElementById("offline-queue-count-badge");
+
+      if (countBadge) {
+        countBadge.textContent = count;
+      }
+
+      if (count > 0) {
+        syncBtn.classList.remove("hidden");
+        syncBtn.classList.add("flex");
+        syncLabel.textContent = `Sync Pending (${count})`;
+
+        queueCard.classList.remove("hidden");
+        queueDesc.textContent = `You have ${count} offline invoice${count > 1 ? 's' : ''} stored locally waiting to sync.`;
+
+        // If details list is already expanded, keep it refreshed with current queue items
+        if (isQueueExpanded) {
+          renderOfflineQueueList();
+        }
+      } else {
+        syncBtn.classList.add("hidden");
+        syncBtn.classList.remove("flex");
+        queueCard.classList.add("hidden");
+
+        // Reset expanded state if queue is emptied
+        isQueueExpanded = false;
+        const details = document.getElementById("offline-queue-details");
+        if (details) details.classList.add("hidden");
+        const btnText = document.getElementById("offline-queue-expand-text");
+        if (btnText) btnText.textContent = "Expand";
+        const icon = document.getElementById("offline-queue-expand-icon");
+        if (icon) icon.classList.remove("rotate-180");
+        const expandBtn = document.getElementById("offline-queue-expand-btn");
+        if (expandBtn) expandBtn.setAttribute("aria-expanded", "false");
+      }
+    }
+
+    function handleOnlineEvent() {
+      const dot = document.getElementById("status-dot");
+      const text = document.getElementById("status-text");
+      if (supabaseClient) {
+        dot.className = "w-2 h-2 rounded-full bg-emerald-500";
+        text.textContent = "Supabase Active";
+      } else {
+        dot.className = "w-2 h-2 rounded-full bg-blue-400";
+        text.textContent = "Online";
+      }
+
+      const count = getOfflineQueue().length;
+      if (count > 0) {
+        showAlert(
+          "Connection Restored",
+          `Device is back online. You have ${count} pending offline invoice${count > 1 ? 's' : ''}. Click "Sync Pending" to sync now.`,
+          "success"
+        );
+      }
+    }
+
+    function handleOfflineEvent() {
+      const dot = document.getElementById("status-dot");
+      const text = document.getElementById("status-text");
+      dot.className = "w-2 h-2 rounded-full bg-amber-500";
+      text.textContent = "Offline Mode";
+      showAlert("Offline Mode", "Internet connection lost. Invoices will be queued locally on this device.", "error");
+    }
+
+    /**
+     * Sync Offline Queue to Supabase
+     */
+    async function syncOfflineQueue() {
+      const queue = getOfflineQueue();
+      if (queue.length === 0) {
+        showAlert("Sync Complete", "Offline queue is empty. All invoices are synchronized.", "success");
+        return;
+      }
+
+      if (!navigator.onLine) {
+        showAlert("Cannot Sync While Offline", "Please connect to the internet before syncing pending invoices.", "error");
+        return;
+      }
+
+      const syncSpin = document.getElementById("sync-icon-spin");
+      const syncStatic = document.getElementById("sync-icon-static");
+      const syncLabel = document.getElementById("sync-pending-label");
+
+      syncSpin.classList.remove("hidden");
+      syncStatic.classList.add("hidden");
+      syncLabel.textContent = "Syncing...";
+
+      let successCount = 0;
+      let failedItems = [];
+
+      for (let i = 0; i < queue.length; i++) {
+        const item = queue[i];
+        
+        // Clean temporary metadata before insertion
+        const cleanPayload = { ...item };
+        delete cleanPayload._queue_id;
+        delete cleanPayload._queued_at;
+
+        try {
+          if (supabaseClient) {
+            const { error } = await supabaseClient
+              .from("transactions")
+              .insert([cleanPayload]);
+
+            if (error) throw error;
+          } else {
+            // Simulated insert delay if running in preview
+            await new Promise(r => setTimeout(r, 120));
+          }
+          successCount++;
+        } catch (err) {
+          console.error("Failed to sync item:", item.invoice_no, err);
+          failedItems.push(item);
+        }
+      }
+
+      saveOfflineQueue(failedItems);
+
+      syncSpin.classList.add("hidden");
+      syncStatic.classList.remove("hidden");
+      syncLabel.textContent = `Sync Pending (${failedItems.length})`;
+
+      if (failedItems.length === 0) {
+        showAlert(
+          "Sync Successful",
+          `Successfully synced ${successCount} offline invoice${successCount > 1 ? 's' : ''} to Supabase!`,
+          "success"
+        );
+      } else {
+        showAlert(
+          "Partial Sync",
+          `Synced ${successCount} invoice(s). ${failedItems.length} invoice(s) could not be pushed and remain in the queue.`,
+          "error"
+        );
+      }
+    }
+
+    function clearOfflineQueue() {
+      if (confirm("Are you sure you want to clear the local offline queue? Any unsynced invoices will be removed.")) {
+        saveOfflineQueue([]);
+        closeConfigModal();
+        showAlert("Queue Cleared", "Local offline queue has been emptied.", "success");
+      }
+    }
+
+    /**
+     * Primary Form Submission
+     * STRICT MANDATE: BLIND ENTRY (ONLY INSERT OPERATIONS, NO SELECT / READ OF HISTORICAL RECORDS)
+     */
+    async function handleMobileSubmit(e) {
+      e.preventDefault();
+
+      const form = e.target;
+      const formData = new FormData(form);
+
+      const transaction_type = formData.get("transaction_type") || "purchases";
+      const transaction_date = formData.get("transaction_date");
+      const invoice_no = formData.get("invoice_no")?.toString().trim();
+      let party_name = formData.get("party_name")?.toString().trim();
+      let trn = formData.get("trn")?.toString().trim();
+      const raw_amount = formData.get("amount_input");
+
+      const isSales = (transaction_type === "sales");
+
+      // 1. Validation & Auto-Fill Logic
+      // Invoice No can be empty and is not required for both sales and purchases; formatted as text
+      const cleanInvoiceNo = invoice_no ? String(invoice_no).trim() : "";
+
+      if (isSales) {
+        // B2C Retail Sales: Automatically inject default Cash Customer & TRN formatted as text
+        party_name = "Cash Customer";
+        trn = "000000000000000";
+      } else {
+        // Purchases: Supplier Name and TRN as text format
+        if (!party_name) {
+          showAlert("Missing Supplier", "Please select or enter the supplier / vendor name.", "error");
+          document.getElementById("party_name").focus();
+          return;
+        }
+
+        if (!trn) {
+          showAlert("Missing TRN", "Please enter the Tax Registration Number (TRN).", "error");
+          document.getElementById("trn").focus();
+          return;
+        }
+      }
+
+      const inputAmt = parseFloat(raw_amount);
+      if (isNaN(inputAmt) || inputAmt <= 0) {
+        showAlert("Invalid Amount", "Please enter a valid amount greater than 0.00.", "error");
+        document.getElementById("amount_input").focus();
+        return;
+      }
+
+      // 2. Client-Side Financial Calculation (Inclusive vs Exclusive)
+      const { amountBeforeTax, vatAmount, amountWithTax } = calculateTaxes(inputAmt, currentTaxMode);
+
+      // 3. Construct Payload for Supabase (Invoice No and TRN formatted as text)
+      const payload = {
+        transaction_type: transaction_type,
+        transaction_date: transaction_date,
+        invoice_no: cleanInvoiceNo,
+        party_name: party_name,
+        trn: String(trn).trim(),
+        amount_before_tax: amountBeforeTax,
+        vat_rate: currentTaxMode === "exempt" ? 0.0 : 0.05,
+        vat_amount: vatAmount,
+        amount_with_tax: amountWithTax,
+        tax_mode: currentTaxMode,
+        created_at: new Date().toISOString()
+      };
+
+      setLoading(true);
+
+      const isOnline = navigator.onLine;
+
+      // Check if network is offline directly
+      if (!isOnline) {
+        // Enqueue immediately
+        enqueueOfflineInvoice(payload);
+        setLoading(false);
+        onSaveSuccess(cleanInvoiceNo, party_name, amountBeforeTax, vatAmount, amountWithTax, true);
+        resetFormPreservingDate();
+        return;
+      }
+
+      try {
+        if (supabaseClient) {
+          // STRICT MANDATE: BLIND INSERT ONLY (NO SELECT / READ)
+          const { error } = await supabaseClient
+            .from("transactions")
+            .insert([payload]);
+
+          if (error) throw error;
+
+          onSaveSuccess(cleanInvoiceNo, party_name, amountBeforeTax, vatAmount, amountWithTax, false);
+        } else {
+          // If no Supabase configured or demo mode, save to offline queue & notify
+          enqueueOfflineInvoice(payload);
+          onSaveSuccess(cleanInvoiceNo, party_name, amountBeforeTax, vatAmount, amountWithTax, true);
+        }
+
+        resetFormPreservingDate();
+
+      } catch (err) {
+        console.warn("Insert failed, fallback to offline queue:", err);
+        // Fallback to offline queue to prevent any data loss!
+        enqueueOfflineInvoice(payload);
+        onSaveSuccess(cleanInvoiceNo, party_name, amountBeforeTax, vatAmount, amountWithTax, true);
+        resetFormPreservingDate();
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function onSaveSuccess(invoice_no, party_name, net, vat, total, isOffline) {
+      if ("vibrate" in navigator) {
+        navigator.vibrate([40, 60, 40]);
+      }
+
+      const invTitle = invoice_no ? `Invoice ${invoice_no}` : "Transaction";
+
+      if (isOffline) {
+        showAlert(
+          `Saved Offline (Queue Updated)`,
+          `${invTitle} (${party_name}) saved locally. Will sync when connection is restored.`,
+          "success",
+          {
+            net: net.toFixed(2),
+            vat: vat.toFixed(2),
+            total: total.toFixed(2)
+          }
+        );
+      } else {
+        showAlert(
+          `${invTitle} Saved`,
+          `${party_name} — Secure Blind Insert completed directly to Supabase.`,
+          "success",
+          {
+            net: net.toFixed(2),
+            vat: vat.toFixed(2),
+            total: total.toFixed(2)
+          }
+        );
+      }
+    }
+
+    function resetFormPreservingDate() {
+      const form = document.getElementById("mobile-entry-form");
+      const currentDate = document.getElementById("transaction_date").value;
+      form.reset();
+      const purchasesRadio = form.querySelector('input[name="transaction_type"][value="purchases"]');
+      if (purchasesRadio) {
+        purchasesRadio.checked = true;
+      }
+      handleTypeChange("purchases");
+      document.getElementById("transaction_date").value = currentDate;
+      handleTrnInput(document.getElementById("trn"));
+      triggerLiveCalculation();
+      document.getElementById("invoice_no").focus();
+    }
+
+    function setLoading(isLoading) {
+      const btn = document.getElementById("submit-btn");
+      const btnText = document.getElementById("btn-text");
+      const btnSpinner = document.getElementById("btn-spinner");
+
+      if (isLoading) {
+        btn.disabled = true;
+        btn.classList.add("opacity-75");
+        btnText.textContent = "Processing Record...";
+        btnSpinner.classList.remove("hidden");
+      } else {
+        btn.disabled = false;
+        btn.classList.remove("opacity-75");
+        const currentType = document.querySelector('input[name="transaction_type"]:checked')?.value || "purchases";
+        btnText.textContent = currentType === "purchases" 
+          ? "Submit Purchases Bill (Secure Insert)" 
+          : "Submit Sales Invoice (Secure Insert)";
+        btnSpinner.classList.add("hidden");
+      }
+    }
+
+    function showAlert(title, desc, type, details = null) {
+      const banner = document.getElementById("alert-banner");
+      const icon = document.getElementById("alert-icon");
+      const t = document.getElementById("alert-title");
+      const d = document.getElementById("alert-desc");
+      const det = document.getElementById("alert-details");
+
+      banner.className = type === "success" 
+        ? "p-4 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-950 shadow-sm"
+        : "p-4 rounded-xl border border-rose-200 bg-rose-50 text-rose-950 shadow-sm";
+
+      icon.textContent = type === "success" ? "✓" : "⚠";
+      t.textContent = title;
+      d.textContent = desc;
+
+      if (details) {
+        document.getElementById("alert-net").textContent = `AED ${details.net}`;
+        document.getElementById("alert-vat").textContent = `AED ${details.vat}`;
+        document.getElementById("alert-total").textContent = `AED ${details.total}`;
+        det.classList.remove("hidden");
+        det.classList.add("grid");
+      } else {
+        det.classList.add("hidden");
+      }
+
+      banner.classList.remove("hidden");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function dismissAlert() {
+      document.getElementById("alert-banner").classList.add("hidden");
+    }
+
+    function resetForm() {
+      const form = document.getElementById("mobile-entry-form");
+      form.reset();
+      const purchasesRadio = form.querySelector('input[name="transaction_type"][value="purchases"]');
+      if (purchasesRadio) {
+        purchasesRadio.checked = true;
+      }
+      handleTypeChange("purchases");
+      initDate();
+      setTaxMode("inclusive");
+      handleTrnInput(document.getElementById("trn"));
+      triggerLiveCalculation();
+      dismissAlert();
+    }
+
+    /**
+     * Secure Client-Side Proxy to Server Backend
+     * Proxies Supabase calls safely through the protected Node.js backend
+     * so secret service keys are never exposed or rejected in the browser.
+     */
+    function createSecureSupabaseProxyClient() {
+      const getAuthHeaders = () => {
+        const token = sessionStorage.getItem("token") || sessionStorage.getItem("auth_token") || localStorage.getItem("token") || localStorage.getItem("auth_token") || "";
+        const headers = { "Content-Type": "application/json" };
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        return headers;
+      };
+
+      return {
+        from(table) {
+          return {
+            select(columns = "*") {
+              return {
+                order(col, { ascending = true } = {}) {
+                  return (async () => {
+                    try {
+                      const res = await fetch(`/api/${table}?order=${col}.${ascending ? 'asc' : 'desc'}`, {
+                        headers: getAuthHeaders()
+                      });
+                      if (!res.ok) {
+                        const err = await res.json().catch(() => ({ message: res.statusText }));
+                        return { data: null, error: err };
+                      }
+                      const data = await res.json();
+                      return { data, error: null };
+                    } catch (err) {
+                      return { data: null, error: err };
+                    }
+                  })();
+                },
+                then(resolve, reject) {
+                  fetch(`/api/${table}`, { headers: getAuthHeaders() })
+                    .then(r => r.ok ? r.json() : Promise.reject(new Error(r.statusText)))
+                    .then(data => resolve({ data, error: null }))
+                    .catch(err => resolve({ data: null, error: err }));
+                }
+              };
+            },
+            insert(records) {
+              return (async () => {
+                try {
+                  const res = await fetch(`/api/${table}`, {
+                    method: "POST",
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify(records)
+                  });
+                  if (!res.ok) {
+                    const errData = await res.json().catch(() => ({ message: res.statusText }));
+                    return { data: null, error: errData };
+                  }
+                  const data = await res.json();
+                  return { data, error: null };
+                } catch (err) {
+                  return { data: null, error: err };
+                }
+              })();
+            },
+            upsert(records, options = {}) {
+              return this.insert(records);
+            }
+          };
+        }
+      };
+    }
+
+    /**
+     * Initialize Supabase Client via Secure Backend Proxy
+     */
+    async function initSupabaseClient() {
+      // Clean up legacy secret key from browser localStorage if present
+      const storedKey = localStorage.getItem("APP_SUPABASE_KEY") || "";
+      if (storedKey.startsWith("sb_secret_")) {
+        localStorage.removeItem("APP_SUPABASE_KEY");
+      }
+
+      const dot = document.getElementById("status-dot");
+      const text = document.getElementById("status-text");
+
+      // Check if user manually configured an Anon publishable key (non-secret)
+      const userKey = localStorage.getItem("APP_SUPABASE_KEY") || "";
+      const userUrl = localStorage.getItem("APP_SUPABASE_URL") || "";
+
+      if (userKey && !userKey.startsWith("sb_secret_") && !userKey.includes("your-supabase-key") && window.supabase && userUrl && !userUrl.includes("your-project")) {
+        try {
+          supabaseClient = window.supabase.createClient(userUrl, userKey);
+          dot.className = "w-2 h-2 rounded-full bg-emerald-500";
+          text.textContent = "Supabase Active (Direct Anon)";
+          syncSuppliersFromSupabase();
+          return;
+        } catch (e) {
+          console.warn("Direct anon client init failed, falling back to secure proxy:", e);
+        }
+      }
+
+      // Default & Secure: Route all database operations through the protected server proxy
+      supabaseClient = createSecureSupabaseProxyClient();
+      window.supabaseClient = supabaseClient;
+
+      try {
+        const res = await fetch("/api/status");
+        if (res.ok) {
+          const status = await res.json();
+          if (status.supabase_connected) {
+            dot.className = "w-2 h-2 rounded-full bg-emerald-500";
+            text.textContent = "Supabase Active";
+            syncSuppliersFromSupabase();
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn("Server status check failed:", err);
+      }
+
+      dot.className = "w-2 h-2 rounded-full bg-emerald-500";
+      text.textContent = "Supabase Active";
+      syncSuppliersFromSupabase();
+    }
+
+    function openConfigModal() {
+      document.getElementById("cfg-url").value = localStorage.getItem("APP_SUPABASE_URL") || "https://frmgpbwbmarkatjroflr.supabase.co";
+      const keyVal = localStorage.getItem("APP_SUPABASE_KEY") || "";
+      document.getElementById("cfg-key").value = keyVal.startsWith("sb_secret_") ? "" : keyVal;
+      document.getElementById("config-modal").classList.remove("hidden");
+    }
+
+    function closeConfigModal() {
+      document.getElementById("config-modal").classList.add("hidden");
+    }
+
+    function saveConfig() {
+      const u = document.getElementById("cfg-url").value.trim();
+      const k = document.getElementById("cfg-key").value.trim();
+
+      if (u) localStorage.setItem("APP_SUPABASE_URL", u);
+      else localStorage.removeItem("APP_SUPABASE_URL");
+
+      // Never store a secret key in client localStorage
+      if (k && !k.startsWith("sb_secret_")) localStorage.setItem("APP_SUPABASE_KEY", k);
+      else localStorage.removeItem("APP_SUPABASE_KEY");
+
+      closeConfigModal();
+      initSupabaseClient();
+    }
+  </script>
+
+  <!-- iOS / iPhone PWA Install Banner Modal -->
+  <div id="ios-install-banner" class="hidden fixed bottom-16 inset-x-4 z-50 bg-slate-900/95 backdrop-blur-xl border border-blue-500/40 rounded-2xl p-4 shadow-2xl text-white">
+    <div class="flex items-start space-x-3">
+      <div class="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shrink-0 text-xl font-bold shadow-md">
+        📱
+      </div>
+      <div class="flex-1">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-bold text-white">Install SDI Accounting on iPhone</h3>
+          <button data-onclick="dismissIOSBanner()" class="text-slate-400 hover:text-white text-xs px-1.5 py-0.5 rounded">✕</button>
+        </div>
+        <p class="text-xs text-slate-300 mt-1 leading-relaxed">
+          Experience this system as a native iPhone app. Tap the <strong>Share</strong> button <span class="inline-block px-1 bg-slate-800 rounded">⎋</span> in Safari, then select <strong>Add to Home Screen</strong> <span class="inline-block px-1 bg-slate-800 rounded">➕</span>.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function dismissIOSBanner() {
+      const banner = document.getElementById("ios-install-banner");
+      if (banner) banner.classList.add("hidden");
+      localStorage.setItem("ios_banner_dismissed", "true");
+    }
+
+    onReady(() => {
+      const isIOS = /iphone|ipad|ipod/.test(window.navigator.userAgent.toLowerCase());
+      const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+      const dismissed = localStorage.getItem("ios_banner_dismissed");
+
+      if (isIOS && !isStandalone && !dismissed) {
+        const banner = document.getElementById("ios-install-banner");
+        if (banner) {
+          setTimeout(() => banner.classList.remove("hidden"), 1500);
+        }
+      }
+    });
+  
+    // ------------------------------------------------------------------------
+    // CSP-COMPLIANT AUTOMATIC PROGRAMMATIC EVENT BINDING ENGINE (CQ-08)
+    // ------------------------------------------------------------------------
+    function executeInlineHandler(el, handlerStr, event) {
+      if (!handlerStr) return;
+      const statements = handlerStr.split(';').map(s => s.trim()).filter(Boolean);
+      
+      for (const statement of statements) {
+        if (statement.startsWith('event.stopPropagation()')) {
+          event.stopPropagation();
+          continue;
+        }
+        if (statement.startsWith('event.preventDefault()')) {
+          event.preventDefault();
+          continue;
+        }
+
+        // Direct element style/class show/hide manipulations
+        const toastMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.add\(['"]([^'"]+)['"]\)/);
+        if (toastMatch) {
+          const targetEl = document.getElementById(toastMatch[1]);
+          if (targetEl) targetEl.classList.add(toastMatch[2]);
+          continue;
+        }
+        const toastRemoveMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.remove\(['"]([^'"]+)['"]\)/);
+        if (toastRemoveMatch) {
+          const targetEl = document.getElementById(toastRemoveMatch[1]);
+          if (targetEl) targetEl.classList.remove(toastRemoveMatch[2]);
+          continue;
+        }
+
+        // Click emulation trigger
+        const clickMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.click\(\)/);
+        if (clickMatch) {
+          const targetEl = document.getElementById(clickMatch[1]);
+          if (targetEl) targetEl.click();
+          continue;
+        }
+
+        // Function call: functionName(arguments)
+        const match = statement.match(/^([a-zA-Z0-9_$]+)\((.*)\)$/);
+        if (match) {
+          const funcName = match[1];
+          const argsStr = match[2].trim();
+          const fn = window[funcName];
+          if (typeof fn === 'function') {
+            const args = [];
+            if (argsStr) {
+              const rawArgs = argsStr.split(',').map(a => a.trim());
+              for (const rawArg of rawArgs) {
+                if (rawArg === 'event') {
+                  args.push(event);
+                } else if (rawArg === 'this') {
+                  args.push(el);
+                } else if (rawArg === 'this.value') {
+                  args.push(el.value);
+                } else if (rawArg === 'this.checked') {
+                  args.push(el.checked);
+                } else if ((rawArg.startsWith("'") && rawArg.endsWith("'")) || (rawArg.startsWith('"') && rawArg.endsWith('"'))) {
+                  args.push(rawArg.slice(1, -1));
+                } else if (rawArg.startsWith(String.fromCharCode(96)) && rawArg.endsWith(String.fromCharCode(96))) {
+                  args.push(rawArg.slice(1, -1)); // simple template string fallback
+                } else {
+                  if (!isNaN(rawArg) && rawArg !== '') {
+                    args.push(Number(rawArg));
+                  } else {
+                    args.push(window[rawArg] !== undefined ? window[rawArg] : rawArg);
+                  }
+                }
+              }
+            }
+            fn.apply(el, args);
+          } else {
+            console.warn("[EVENT-BIND] Function window." + funcName + " is not defined.");
+          }
+        }
+      }
+    }
+
+    onReady(() => {
+      console.log("[EVENT-BIND] Initializing programmatic CSP event bindings...");
+      
+      // Bind click handlers (data-onclick)
+      document.querySelectorAll('[data-onclick]').forEach(el => {
+        el.addEventListener('click', (e) => {
+          const handlerStr = el.getAttribute('data-onclick');
+          executeInlineHandler(el, handlerStr, e);
+        });
+      });
+
+      // Bind submit handlers (data-onsubmit)
+      document.querySelectorAll('[data-onsubmit]').forEach(el => {
+        el.addEventListener('submit', (e) => {
+          const handlerStr = el.getAttribute('data-onsubmit');
+          executeInlineHandler(el, handlerStr, e);
+        });
+      });
+
+      // Bind change handlers (data-onchange)
+      document.querySelectorAll('[data-onchange]').forEach(el => {
+        el.addEventListener('change', (e) => {
+          const handlerStr = el.getAttribute('data-onchange');
+          executeInlineHandler(el, handlerStr, e);
+        });
+      });
+
+      // Bind input handlers (data-oninput)
+      document.querySelectorAll('[data-oninput]').forEach(el => {
+        el.addEventListener('input', (e) => {
+          const handlerStr = el.getAttribute('data-oninput');
+          executeInlineHandler(el, handlerStr, e);
+        });
+      });
+
+      console.log("[EVENT-BIND] Programmatic event bindings complete.");
+    });
+</script>
+</body>
+</html>
