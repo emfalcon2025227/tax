@@ -1,0 +1,6 @@
+{
+  "name": "Tax & Accounting Data Entry",
+  "description": "Secure mobile and desktop blind data entry application with automatic VAT calculation and Supabase insertion.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
