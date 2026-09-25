@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "fix/**"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: TypeScript validation
+        run: npm run lint
+
+      - name: Production build
+        run: npm run build
+
+      - name: Validate built server syntax
+        run: node --check dist/server.cjs
+
+      - name: Validate embedded HTML JavaScript
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+
+          for (const file of ['index.html', 'admin.html']) {
+            const html = fs.readFileSync(file, 'utf8');
+            const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)].map(m => m[1]);
+
+            if (scripts.length === 0) {
+              throw new Error(file + ': no script blocks found');
+            }
+
+            scripts.forEach((script, index) => {
+              try {
+                new Function(script);
+              } catch (error) {
+                throw new Error(file + ': script #' + index + ' syntax error: ' + error.message);
+              }
+            });
+
+            console.log(file + ': ' + scripts.length + ' script block(s) passed syntax validation.');
+          }
+          NODE
