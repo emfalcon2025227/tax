@@ -1972,16 +1972,15 @@
             <div>
               <div class="flex items-center justify-between mb-1">
                 <label for="settings-supabase-key" class="text-xs font-bold text-slate-700">
-                  SUPABASE_KEY <span class="text-rose-500">*</span>
+                  SUPABASE_KEY
                 </label>
-                <span class="text-[10px] text-slate-500">Visually masked for security</span>
+                <span id="settings-secret-mode-badge" class="text-[10px] text-slate-500">Local configuration only</span>
               </div>
               <div class="relative">
                 <input 
                   type="password" 
                   id="settings-supabase-key" 
-                  required 
-                  placeholder="sb_secret_... or eyJhbGciOi..." 
+                  placeholder="Used only outside production" 
                   class="w-full text-xs font-mono px-3 py-2 pr-10 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
                 />
                 <button 
@@ -1997,7 +1996,7 @@
                   </svg>
                 </button>
               </div>
-              <p class="text-[10px] text-slate-500 mt-1">API Key (Anon Public or Service Role) used for backend data synchronization.</p>
+              <p class="text-[10px] text-slate-500 mt-1">In production this secret is supplied by Cloud Run Secret Manager and is never exposed here.</p>
             </div>
 
             <!-- Test Connection Action & Result Badge -->
@@ -6534,7 +6533,27 @@
 
         if (settings && settings.success) {
           if (urlInput && settings.supabase_url) urlInput.value = settings.supabase_url;
-          if (keyInput && settings.supabase_key) keyInput.value = settings.supabase_key;
+
+          const secretManaged = settings.secret_managed_by_secret_manager === true;
+          if (keyInput) {
+            keyInput.dataset.managedBySecretManager = secretManaged ? "true" : "false";
+            keyInput.value = "";
+            keyInput.disabled = secretManaged;
+            keyInput.placeholder = secretManaged
+              ? "Managed by Google Cloud Secret Manager"
+              : "Enter local development key";
+          }
+
+          const modeBadge = document.getElementById("settings-secret-mode-badge");
+          if (modeBadge) {
+            modeBadge.textContent = secretManaged
+              ? "Production: Secret Manager"
+              : "Local configuration only";
+            modeBadge.className = secretManaged
+              ? "text-[10px] text-emerald-700 font-bold"
+              : "text-[10px] text-slate-500";
+          }
+
           if (vatInput && settings.default_vat_rate !== undefined) {
             vatInput.value = Number(settings.default_vat_rate).toFixed(1);
             currentVatRate = Number(settings.default_vat_rate);
@@ -6624,13 +6643,16 @@
       const alertEl = document.getElementById("settings-modal-alert");
 
       const supabase_url = urlInput ? urlInput.value.trim() : "";
+      const secretManaged = keyInput?.dataset.managedBySecretManager === "true";
       const supabase_key = keyInput ? keyInput.value.trim() : "";
       const default_vat_rate = vatInput ? parseFloat(vatInput.value) : 5.0;
 
-      if (!supabase_url || !supabase_key) {
+      if (!supabase_url || (!secretManaged && !supabase_key)) {
         if (alertEl) {
           alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-rose-50 text-rose-800 border border-rose-200 block";
-          alertEl.textContent = "Please fill in both SUPABASE_URL and SUPABASE_KEY.";
+          alertEl.textContent = secretManaged
+            ? "Please provide SUPABASE_URL."
+            : "Please fill in both SUPABASE_URL and SUPABASE_KEY.";
         }
         return;
       }
@@ -6646,7 +6668,11 @@
           const res = await fetch("/api/settings", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ supabase_url, supabase_key, default_vat_rate })
+            body: JSON.stringify({
+              supabase_url,
+              supabase_key: secretManaged ? "" : supabase_key,
+              default_vat_rate
+            })
           });
           saveResult = await res.json();
         }
@@ -6655,7 +6681,9 @@
           currentVatRate = default_vat_rate;
           if (alertEl) {
             alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 block";
-            alertEl.textContent = "✓ Settings saved securely! Database credentials updated and Supabase client reloaded.";
+            alertEl.textContent = secretManaged
+              ? "✓ VAT setting saved. Production database credentials remain managed by Secret Manager."
+              : "✓ Local settings saved successfully.";
           }
           
           // Re-check backend bridge status
