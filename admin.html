@@ -4017,11 +4017,12 @@
               errStr = resData.error || resData.message || "Failed to update supplier";
             }
           } catch (err) {
+            errStr = err?.message || String(err);
             console.warn("REST update supplier error:", err);
           }
         }
 
-        if (updated || !errStr) {
+        if (updated && !errStr) {
           const targetTrn = oldTrn || editId;
           const rec = REAL_UAE_RECORDS.find(r => String(r.trn) === String(targetTrn) || r.party_name === name);
           if (rec) {
@@ -4066,28 +4067,45 @@
           return;
         }
 
+        let createSucceeded = false;
+        let createError = "";
+
         try {
           if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.add_supplier === "function") {
             const res = await window.pywebview.api.add_supplier(name, trn);
-            if (res && !res.success) {
-              if (alertBox) {
-                alertBox.textContent = res.error || "Failed to add supplier.";
-                alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
-              }
-              return;
+            if (res && res.success) {
+              createSucceeded = true;
+            } else {
+              createError = res?.error || "Failed to add supplier.";
             }
           } else {
-            await fetch("/api/suppliers", {
+            const response = await fetch("/api/suppliers", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ name, trn })
             });
+            const resData = await response.json().catch(() => ({}));
+
+            if (response.ok && resData.success !== false) {
+              createSucceeded = true;
+            } else {
+              createError = resData.error || resData.message || ("HTTP " + response.status + ": Failed to add supplier.");
+            }
           }
         } catch (err) {
+          createError = err?.message || String(err);
           console.warn("Add supplier server call:", err);
         }
 
-        // Cache locally
+        if (!createSucceeded) {
+          if (alertBox) {
+            alertBox.textContent = createError || "Supplier was not saved to the live database.";
+            alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
+          }
+          return;
+        }
+
+        // Cache locally only after a confirmed backend write.
         try {
           const key = "accounting_custom_suppliers";
           const saved = localStorage.getItem(key);
@@ -5569,27 +5587,37 @@
 
           // 2. Server API import (Direct to Supabase via protected proxy)
           const validRecords = pendingCsvRows.map(r => ({ name: r.name, trn: r.trn }));
+          let serverImportNetworkFailure = false;
           try {
             const srvRes = await fetch("/api/import/suppliers", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ rows: validRecords })
             });
-            if (srvRes.ok) {
-              const resData = await srvRes.json();
-              if (resData.success || resData.inserted_count > 0) {
-                closeImportModal();
-                showToast(`Suppliers Imported! ${resData.inserted_count} suppliers added/updated in Supabase.`, "success");
-                if (typeof loadSuppliersList === "function") await loadSuppliersList();
-                return;
-              }
+            const resData = await srvRes.json().catch(() => ({}));
+
+            if (!srvRes.ok) {
+              // A real HTTP response means the server handled the request; never retry through another writer.
+              showToast(resData.error || resData.message || (`HTTP ${srvRes.status}: Supplier import rejected by server.`), "error");
+              return;
             }
+
+            if (resData.success || resData.inserted_count > 0) {
+              closeImportModal();
+              showToast(`Suppliers Imported! ${resData.inserted_count} suppliers added/updated in Supabase.`, "success");
+              if (typeof loadSuppliersList === "function") await loadSuppliersList();
+              return;
+            }
+
+            showToast("Supplier import returned an unexpected response. No fallback write was attempted.", "error");
+            return;
           } catch (e) {
-            console.warn("Server import suppliers fallback:", e);
+            serverImportNetworkFailure = true;
+            console.warn("Server import suppliers network failure:", e);
           }
 
-          // 3. Supabase Client fallback for Suppliers
-          if (window.supabaseClient) {
+          // 3. Supabase Client fallback for Suppliers is allowed only after a genuine transport failure.
+          if (serverImportNetworkFailure && window.supabaseClient) {
             const { data, error } = await window.supabaseClient.from("suppliers").upsert(validRecords, { onConflict: "trn" });
             if (error) throw error;
             closeImportModal();
@@ -5656,25 +5684,35 @@
             tax_mode: r.tax_mode
           }));
 
+          let serverImportNetworkFailure = false;
           try {
             const srvRes = await fetch("/api/import/transactions", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ rows: validRecords, forced_type: forcedType, raw_csv: rawCsvText })
             });
-            if (srvRes.ok) {
-              const resData = await srvRes.json();
-              if (resData.success || resData.inserted_count > 0) {
-                await onImportSuccess(resData.inserted_count || validRecords.length);
-                return;
-              }
+            const resData = await srvRes.json().catch(() => ({}));
+
+            if (!srvRes.ok) {
+              // The server returned a definitive response; do not retry through another writer.
+              showToast(resData.error || resData.message || (`HTTP ${srvRes.status}: Transaction import rejected by server.`), "error");
+              return;
             }
+
+            if (resData.success || resData.inserted_count > 0) {
+              await onImportSuccess(resData.inserted_count || validRecords.length);
+              return;
+            }
+
+            showToast("Transaction import returned an unexpected response. No fallback write was attempted.", "error");
+            return;
           } catch (e) {
-            console.warn("Server import transactions fallback:", e);
+            serverImportNetworkFailure = true;
+            console.warn("Server import transactions network failure:", e);
           }
 
-          // 3. Supabase Client fallback for Transactions
-          if (window.supabaseClient) {
+          // 3. Supabase Client fallback for Transactions is allowed only after a genuine transport failure.
+          if (serverImportNetworkFailure && window.supabaseClient) {
             const chunkSize = 200;
             for (let i = 0; i < validRecords.length; i += chunkSize) {
               const chunk = validRecords.slice(i, i + chunkSize);
@@ -7852,9 +7890,10 @@
             const resp = await fetch(`${endpoint}?${params.toString()}`);
             if (resp.ok) {
               const data = await resp.json();
-              if (data && data.success && data.csv) {
+              const csvPayload = data && (data.csv_content || data.csv);
+              if (data && data.success && csvPayload) {
                 // Download CSV with UTF-8 BOM
-                const blob = new Blob([data.csv], { type: "text/csv;charset=utf-8;" });
+                const blob = new Blob([csvPayload], { type: "text/csv;charset=utf-8;" });
                 const url = URL.createObjectURL(blob);
                 const link = document.createElement("a");
                 link.setAttribute("href", url);
@@ -7918,7 +7957,17 @@
         totalWith += parseFloat(r.amount_with_tax) || 0;
       });
 
-      const todayStr = new Date().toISOString().split("T")[0];
+      let todayStr;
+      try {
+        todayStr = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Dubai",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit"
+        }).format(new Date());
+      } catch (err) {
+        todayStr = new Date().toLocaleDateString("en-CA");
+      }
       const filename = `UAE_${isSales ? 'Sales' : 'Purchases'}_Ledger_${todayStr}.csv`;
 
       // UTF-8-SIG BOM (\ufeff)
@@ -8014,7 +8063,12 @@
               const data = await resp.json();
               if (data && data.success) {
                 generated = true;
-                showToast(`✓ Landscape A4 ${title} PDF generated: ${data.filepath || data.filename}`, "success");
+                if (Array.isArray(data.transactions)) {
+                  printDedicatedLedgerDocument(type, data.transactions);
+                } else {
+                  printDedicatedLedgerDocument(type);
+                }
+                showToast(`✓ Landscape A4 ${title} prepared for printing from live data.`, "success");
               }
             }
           } catch (apiErr) {
@@ -8041,7 +8095,7 @@
     /**
      * Standalone Landscape A4 Printable Window for Single/General Ledger
      */
-    function printDedicatedLedgerDocument(type) {
+    function printDedicatedLedgerDocument(type, sourceRecords = null) {
       const isSales = (type === "sales");
       const isPurchases = (type === "purchases");
       const isAll = (type === "all");
@@ -8054,7 +8108,9 @@
       const lightTheme = isSales ? "#ecfdf5" : (isPurchases ? "#fff1f2" : "#eef2ff");
 
       // Filter transactions matching type and active search/date
-      let records = [...allLedgerTransactions];
+      let records = Array.isArray(sourceRecords)
+        ? [...sourceRecords]
+        : [...allLedgerTransactions];
 
       if (isSales) {
         records = records.filter(tx => String(tx.transaction_type || "").toLowerCase().trim() === "sales");
