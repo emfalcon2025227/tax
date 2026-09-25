@@ -39,16 +39,11 @@ if (isProd) {
   }
 }
 
-const DEFAULT_SUPABASE_URL = "https://frmgpbwbmarkatjroflr.supabase.co";
-const DEFAULT_SUPABASE_KEY = "sb_secret_lESPIyr1EUoMeckMYNPhBQ_wOBAaMya";
-
-const rawAuthSecret = (process.env.AUTH_SECRET_KEY || process.env.JWT_SECRET || "uae_tax_accounting_system_secure_secret_2026_jwt").trim();
+const rawAuthSecret = (process.env.AUTH_SECRET_KEY || process.env.JWT_SECRET || "").trim();
 const AUTH_SECRET_KEY: string = rawAuthSecret;
 
-const rawSupabaseUrl = (process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, "");
-const rawSupabaseKey = (process.env.SUPABASE_KEY || DEFAULT_SUPABASE_KEY).trim();
-const SUPABASE_URL: string = rawSupabaseUrl;
-const SUPABASE_KEY: string = rawSupabaseKey;
+const SUPABASE_URL: string = (process.env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
+const SUPABASE_KEY: string = (process.env.SUPABASE_KEY || "").trim();
 
 function getUAECurrentDate(): string {
   try {
@@ -350,8 +345,8 @@ function updateEnvFile(url: string, key: string) {
 
 // Helper to safely get Supabase credentials with fallback defaults
 function getSupabaseConfig(): { url: string; key: string } {
-  const url = (process.env.SUPABASE_URL || SUPABASE_URL || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, "");
-  const key = (process.env.SUPABASE_KEY || SUPABASE_KEY || DEFAULT_SUPABASE_KEY).trim();
+  const url = (process.env.SUPABASE_URL || SUPABASE_URL || "").trim().replace(/\/+$/, "");
+  const key = (process.env.SUPABASE_KEY || SUPABASE_KEY || "").trim();
   return { url, key };
 }
 
@@ -827,33 +822,54 @@ app.get("/api/settings", requireOwner, (req: Request, res: Response) => {
   let maskedKey = "";
   if (key) {
     if (key.length > 8) {
-      maskedKey = key.slice(0, 4) + "•".repeat(key.length - 8) + key.slice(-4);
+      maskedKey = key.slice(0, 4) + "•".repeat(Math.max(0, key.length - 8)) + key.slice(-4);
     } else {
       maskedKey = "••••••••";
     }
   }
+
   res.json({
     success: true,
     supabase_url: url,
-    supabase_key: key,
     supabase_key_masked: maskedKey,
+    supabase_key_configured: Boolean(key),
+    secret_managed_by_secret_manager: isProd,
     default_vat_rate: cfg.default_vat_rate ?? 5.0
   });
 });
 
 app.post("/api/settings", requireOwner, (req: Request, res: Response) => {
   const { supabase_url, supabase_key, default_vat_rate } = req.body;
-  if (!supabase_url || !supabase_key) {
-    return res.status(400).json({ error: "Both SUPABASE_URL and SUPABASE_KEY are required." });
+  const parsedVatRate = Number(default_vat_rate);
+
+  if (!Number.isFinite(parsedVatRate) || parsedVatRate < 0 || parsedVatRate > 100) {
+    return res.status(400).json({ error: "default_vat_rate must be a number between 0 and 100." });
   }
-  const vatRate = parseFloat(default_vat_rate) || 5.0;
+
+  // Production credentials are managed only by Cloud Run/Secret Manager.
+  // Never write production secrets into the application filesystem.
+  if (isProd) {
+    writeConfigJson({ default_vat_rate: parsedVatRate });
+    return res.json({
+      success: true,
+      secret_managed_by_secret_manager: true,
+      message: "VAT setting saved. Supabase production credentials remain managed by Secret Manager.",
+      supabase_url: getSupabaseConfig().url,
+      default_vat_rate: parsedVatRate
+    });
+  }
+
+  if (!supabase_url || !supabase_key) {
+    return res.status(400).json({ error: "Both SUPABASE_URL and SUPABASE_KEY are required outside production." });
+  }
+
   updateEnvFile(supabase_url.trim(), supabase_key.trim());
-  writeConfigJson({ default_vat_rate: vatRate });
+  writeConfigJson({ default_vat_rate: parsedVatRate });
   res.json({
     success: true,
     message: "Settings saved successfully! Database credentials updated and client reloaded.",
     supabase_url: supabase_url.trim(),
-    default_vat_rate: vatRate
+    default_vat_rate: parsedVatRate
   });
 });
 
@@ -1004,7 +1020,7 @@ app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, re
 
 app.post("/api/test-connection", requireOwner, async (req: Request, res: Response) => {
   const targetUrl = (req.body.supabase_url || process.env.SUPABASE_URL || "https://frmgpbwbmarkatjroflr.supabase.co").replace(/\/+$/, "");
-  const targetKey = req.body.supabase_key || process.env.SUPABASE_KEY || "sb_secret_lESPIyr1EUoMeckMYNPhBQ_wOBAaMya";
+  const targetKey = req.body.supabase_key || process.env.SUPABASE_KEY || "";
   try {
     const check = await fetch(`${targetUrl}/rest/v1/suppliers?select=name,trn&limit=1`, {
       headers: {

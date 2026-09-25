@@ -1972,16 +1972,15 @@
             <div>
               <div class="flex items-center justify-between mb-1">
                 <label for="settings-supabase-key" class="text-xs font-bold text-slate-700">
-                  SUPABASE_KEY <span class="text-rose-500">*</span>
+                  SUPABASE_KEY
                 </label>
-                <span class="text-[10px] text-slate-500">Visually masked for security</span>
+                <span id="settings-secret-mode-badge" class="text-[10px] text-slate-500">Local configuration only</span>
               </div>
               <div class="relative">
                 <input 
                   type="password" 
                   id="settings-supabase-key" 
-                  required 
-                  placeholder="sb_secret_... or eyJhbGciOi..." 
+                  placeholder="Used only outside production" 
                   class="w-full text-xs font-mono px-3 py-2 pr-10 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
                 />
                 <button 
@@ -1997,7 +1996,7 @@
                   </svg>
                 </button>
               </div>
-              <p class="text-[10px] text-slate-500 mt-1">API Key (Anon Public or Service Role) used for backend data synchronization.</p>
+              <p class="text-[10px] text-slate-500 mt-1">In production this secret is supplied by Cloud Run Secret Manager and is never exposed here.</p>
             </div>
 
             <!-- Test Connection Action & Result Badge -->
@@ -2862,12 +2861,13 @@
           label = `Current Month (${now.toLocaleString('default', { month: 'long', year: 'numeric' })})`;
           fiscalSubtitle = `Monthly Calendar View (${this.formatDate(start)} - ${this.formatDate(end)})`;
         } else if (key === "current_quarter") {
-          targetFiscalYear = 2026;
-          quarter = 3;
-          start = new Date(2026, 7, 1);
-          end = new Date(2026, 9, 31, 23, 59, 59);
-          label = "FY 2026 - Q3 (Aug, Sep, Oct 2026) - Current";
-          fiscalSubtitle = "Fiscal Year 2026 Q3 Schedule (Aug - Oct 2026)";
+          targetFiscalYear = currentFyInfo.fiscalYear;
+          quarter = currentFyInfo.quarter;
+          const bounds = this.getQuarterBounds(targetFiscalYear, quarter);
+          start = bounds.start;
+          end = bounds.end;
+          label = `FY ${targetFiscalYear} - Q${quarter} (${this.getQuarterMonthNames(quarter)}) - Current`;
+          fiscalSubtitle = `Fiscal Year ${targetFiscalYear} Q${quarter} Schedule (${this.getQuarterMonthNames(quarter)})`;
         } else {
           // All Time History (default)
           start = new Date(2020, 0, 1);
@@ -3519,11 +3519,12 @@
         const qBtn = document.getElementById(`btn-q-${qNum}`);
         if (qBtn) qBtn.className = "quarter-btn px-2.5 py-1 rounded text-xs font-bold transition-all cursor-pointer bg-indigo-600 text-white border border-indigo-600 shadow-2xs";
       } else if (keyLower === "current_quarter") {
-        selectedFiscalYear = "2026";
-        currentQuarterType = "q3";
+        const currentFyInfo = FiscalCalendar.getFiscalYearAndQuarter(new Date());
+        selectedFiscalYear = String(currentFyInfo.fiscalYear);
+        currentQuarterType = "q" + currentFyInfo.quarter;
         const yearSelect = document.getElementById("fiscal-year-select");
-        if (yearSelect) yearSelect.value = "2026";
-        const qBtn = document.getElementById("btn-q-q3");
+        if (yearSelect) yearSelect.value = selectedFiscalYear;
+        const qBtn = document.getElementById("btn-q-" + currentQuarterType);
         if (qBtn) qBtn.className = "quarter-btn px-2.5 py-1 rounded text-xs font-bold transition-all cursor-pointer bg-indigo-600 text-white border border-indigo-600 shadow-2xs";
       }
 
@@ -3761,26 +3762,29 @@
         }
       }
 
-      // 3. Fallback to REAL_UAE_RECORDS ONLY if network/backend failed completely and not wiped
+      // 3. Never fabricate supplier data when the backend is unavailable.
       if (!fetchedSuccessfully) {
-        const isWiped = localStorage.getItem("accounting_suppliers_wiped") === "true";
-        if (!isWiped) {
-          suppliersList = (REAL_UAE_RECORDS || []).map(r => ({ name: r.party_name || r.name, trn: r.trn, id: r.id }));
-          try {
-            const saved = localStorage.getItem("accounting_custom_suppliers");
-            if (saved) {
-              const custom = JSON.parse(saved);
-              if (Array.isArray(custom)) {
-                custom.forEach(cs => {
-                  if (cs && cs.name && cs.trn && !suppliersList.some(s => String(s.trn) === String(cs.trn))) {
-                    suppliersList.push({ name: cs.name, trn: cs.trn });
-                  }
-                });
-              }
-            }
-          } catch (e) {}
-        }
+        const errorRow = `<tr><td colspan="4" class="py-6 text-center text-rose-600 text-xs font-medium">
+          Unable to load the supplier directory from the live database.
+          <div class="mt-1 text-[10px] text-slate-500">No local/sample supplier records were substituted.</div>
+        </td></tr>`;
+        tbody.innerHTML = errorRow;
+        if (countBadge) countBadge.textContent = "Database unavailable";
+        return;
       }
+
+      // Keep the local cache synchronized only with records returned by the live backend.
+      REAL_UAE_RECORDS.length = 0;
+      suppliersList.forEach(s => {
+        if (s && (s.name || s.party_name) && s.trn) {
+          REAL_UAE_RECORDS.push({
+            party_name: s.name || s.party_name,
+            trn: String(s.trn),
+            id: s.id,
+            type: "purchases"
+          });
+        }
+      });
 
       // Always filter out deleted suppliers so they never reappear
       try {
@@ -4012,11 +4016,12 @@
               errStr = resData.error || resData.message || "Failed to update supplier";
             }
           } catch (err) {
+            errStr = err?.message || String(err);
             console.warn("REST update supplier error:", err);
           }
         }
 
-        if (updated || !errStr) {
+        if (updated && !errStr) {
           const targetTrn = oldTrn || editId;
           const rec = REAL_UAE_RECORDS.find(r => String(r.trn) === String(targetTrn) || r.party_name === name);
           if (rec) {
@@ -4061,28 +4066,45 @@
           return;
         }
 
+        let createSucceeded = false;
+        let createError = "";
+
         try {
           if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.add_supplier === "function") {
             const res = await window.pywebview.api.add_supplier(name, trn);
-            if (res && !res.success) {
-              if (alertBox) {
-                alertBox.textContent = res.error || "Failed to add supplier.";
-                alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
-              }
-              return;
+            if (res && res.success) {
+              createSucceeded = true;
+            } else {
+              createError = res?.error || "Failed to add supplier.";
             }
           } else {
-            await fetch("/api/suppliers", {
+            const response = await fetch("/api/suppliers", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ name, trn })
             });
+            const resData = await response.json().catch(() => ({}));
+
+            if (response.ok && resData.success !== false) {
+              createSucceeded = true;
+            } else {
+              createError = resData.error || resData.message || ("HTTP " + response.status + ": Failed to add supplier.");
+            }
           }
         } catch (err) {
+          createError = err?.message || String(err);
           console.warn("Add supplier server call:", err);
         }
 
-        // Cache locally
+        if (!createSucceeded) {
+          if (alertBox) {
+            alertBox.textContent = createError || "Supplier was not saved to the live database.";
+            alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
+          }
+          return;
+        }
+
+        // Cache locally only after a confirmed backend write.
         try {
           const key = "accounting_custom_suppliers";
           const saved = localStorage.getItem(key);
@@ -4104,6 +4126,41 @@
           handleGlobalSearch(name);
         }
       }
+    }
+
+    async function fetchAllTransactionsFromServer() {
+      const all = [];
+      let page = 1;
+      const pageSize = 500;
+
+      while (true) {
+        const response = await fetch(`/api/transactions?paginated=true&page=${page}&pageSize=${pageSize}&order=transaction_date.desc`, {
+          headers: { "Authorization": `Bearer ${getAuthToken()}`, "Accept": "application/json" }
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          const error = new Error(errData.error || `HTTP ${response.status}: Failed to fetch transactions`);
+          error.status = response.status;
+          throw error;
+        }
+
+        const payload = await response.json();
+        if (!payload || payload.success !== true || !Array.isArray(payload.data)) {
+          throw new Error("Invalid paginated transactions response.");
+        }
+
+        all.push(...payload.data);
+
+        if (!payload.pagination || !payload.pagination.hasMore) break;
+        page += 1;
+
+        if (page > 1000) {
+          throw new Error("Transaction pagination exceeded the safety limit.");
+        }
+      }
+
+      return all;
     }
 
     async function loadAnalytics(filterKey = currentFilter) {
@@ -4135,26 +4192,26 @@
           await checkAdminAuthSession();
           token = getAuthToken();
         }
-        let resp = await fetch(`/api/transactions?order=transaction_date.desc`, {
-          headers: token ? { "Authorization": `Bearer ${token}` } : {}
-        });
-        if (resp.status === 401) {
-          const reauthOk = await checkAdminAuthSession();
-          if (reauthOk) {
-            const newToken = getAuthToken();
-            resp = await fetch(`/api/transactions?order=transaction_date.desc`, {
-              headers: newToken ? { "Authorization": `Bearer ${newToken}` } : {}
-            });
+        if (!token) {
+          throw new Error("No authenticated admin session is available.");
+        }
+
+        let dbTx;
+        try {
+          dbTx = await fetchAllTransactionsFromServer();
+        } catch (serverErr) {
+          if (Number(serverErr?.status) === 401) {
+            const reauthOk = await checkAdminAuthSession();
+            if (!reauthOk) throw serverErr;
+            dbTx = await fetchAllTransactionsFromServer();
+          } else {
+            throw serverErr;
           }
         }
-        if (resp.ok) {
-          const dbTx = await resp.json();
-          if (Array.isArray(dbTx)) {
-            const data = processTransactionsAnalytics(dbTx, filterKey, currentDateFrom, currentDateTo, currentSearch);
-            renderDashboard(data);
-            return;
-          }
-        }
+
+        const data = processTransactionsAnalytics(dbTx, filterKey, currentDateFrom, currentDateTo, currentSearch);
+        renderDashboard(data);
+        return;
       } catch (err) {
         console.warn("Server transactions query failed:", err);
       }
@@ -4189,9 +4246,22 @@
         }
       }
 
-      // Client fallback analytics respecting custom fiscal quarters, date range, and search
-      const data = simulateAnalytics(filterKey, currentDateFrom, currentDateTo, currentSearch);
-      renderDashboard(data);
+      // Do not fabricate or silently display zeroed analytics when live data is unavailable.
+      if (Array.isArray(allLedgerTransactions) && allLedgerTransactions.length > 0) {
+        const data = processTransactionsAnalytics(
+          allLedgerTransactions,
+          filterKey,
+          currentDateFrom,
+          currentDateTo,
+          currentSearch
+        );
+        renderDashboard(data);
+      } else {
+        const rangeEl = document.getElementById("active-range-label");
+        if (rangeEl) rangeEl.textContent = "Live database unavailable";
+        showToast("Unable to load live accounting data. No sample or simulated figures were displayed.", "error");
+        return;
+      }
 
       // Sync ledger if synchronized period mode is active
       if (typeof applyLedgerFilters === "function" && typeof ledgerPeriodSyncMode !== "undefined" && ledgerPeriodSyncMode === "sync") {
@@ -4667,9 +4737,12 @@
             showToast(res ? res.error : "Failed to generate report", "error");
           }
         } else {
-          // Client Fallback Excel generation respecting active filters and strict column ordering:
-          // Seq | Date | Invoice No | Party Name | TRN | Amount With Tax | VAT 5% | Amount Before Tax
-          const currentData = activeAnalyticsData || simulateAnalytics(currentFilter, currentDateFrom, currentDateTo, currentSearch);
+          // Client fallback is allowed only when real live analytics data is already loaded.
+          // Never generate an accounting report from an empty/simulated dataset.
+          const currentData = activeAnalyticsData;
+          if (!currentData || !Array.isArray(currentData.transactions)) {
+            throw new Error("Live accounting data is unavailable. Excel export was not generated.");
+          }
           const rows = [
             ["Seq", "Date", "Invoice No", "Party Name", "TRN", "Amount With Tax", "VAT 5%", "Amount Before Tax"]
           ];
@@ -5516,27 +5589,37 @@
 
           // 2. Server API import (Direct to Supabase via protected proxy)
           const validRecords = pendingCsvRows.map(r => ({ name: r.name, trn: r.trn }));
+          let serverImportNetworkFailure = false;
           try {
             const srvRes = await fetch("/api/import/suppliers", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ rows: validRecords })
             });
-            if (srvRes.ok) {
-              const resData = await srvRes.json();
-              if (resData.success || resData.inserted_count > 0) {
-                closeImportModal();
-                showToast(`Suppliers Imported! ${resData.inserted_count} suppliers added/updated in Supabase.`, "success");
-                if (typeof loadSuppliersList === "function") await loadSuppliersList();
-                return;
-              }
+            const resData = await srvRes.json().catch(() => ({}));
+
+            if (!srvRes.ok) {
+              // A real HTTP response means the server handled the request; never retry through another writer.
+              showToast(resData.error || resData.message || (`HTTP ${srvRes.status}: Supplier import rejected by server.`), "error");
+              return;
             }
+
+            if (resData.success || resData.inserted_count > 0) {
+              closeImportModal();
+              showToast(`Suppliers Imported! ${resData.inserted_count} suppliers added/updated in Supabase.`, "success");
+              if (typeof loadSuppliersList === "function") await loadSuppliersList();
+              return;
+            }
+
+            showToast("Supplier import returned an unexpected response. No fallback write was attempted.", "error");
+            return;
           } catch (e) {
-            console.warn("Server import suppliers fallback:", e);
+            serverImportNetworkFailure = true;
+            console.warn("Server import suppliers network failure:", e);
           }
 
-          // 3. Supabase Client fallback for Suppliers
-          if (window.supabaseClient) {
+          // 3. Supabase Client fallback for Suppliers is allowed only after a genuine transport failure.
+          if (serverImportNetworkFailure && window.supabaseClient) {
             const { data, error } = await window.supabaseClient.from("suppliers").upsert(validRecords, { onConflict: "trn" });
             if (error) throw error;
             closeImportModal();
@@ -5603,25 +5686,35 @@
             tax_mode: r.tax_mode
           }));
 
+          let serverImportNetworkFailure = false;
           try {
             const srvRes = await fetch("/api/import/transactions", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ rows: validRecords, forced_type: forcedType, raw_csv: rawCsvText })
             });
-            if (srvRes.ok) {
-              const resData = await srvRes.json();
-              if (resData.success || resData.inserted_count > 0) {
-                await onImportSuccess(resData.inserted_count || validRecords.length);
-                return;
-              }
+            const resData = await srvRes.json().catch(() => ({}));
+
+            if (!srvRes.ok) {
+              // The server returned a definitive response; do not retry through another writer.
+              showToast(resData.error || resData.message || (`HTTP ${srvRes.status}: Transaction import rejected by server.`), "error");
+              return;
             }
+
+            if (resData.success || resData.inserted_count > 0) {
+              await onImportSuccess(resData.inserted_count || validRecords.length);
+              return;
+            }
+
+            showToast("Transaction import returned an unexpected response. No fallback write was attempted.", "error");
+            return;
           } catch (e) {
-            console.warn("Server import transactions fallback:", e);
+            serverImportNetworkFailure = true;
+            console.warn("Server import transactions network failure:", e);
           }
 
-          // 3. Supabase Client fallback for Transactions
-          if (window.supabaseClient) {
+          // 3. Supabase Client fallback for Transactions is allowed only after a genuine transport failure.
+          if (serverImportNetworkFailure && window.supabaseClient) {
             const chunkSize = 200;
             for (let i = 0; i < validRecords.length; i += chunkSize) {
               const chunk = validRecords.slice(i, i + chunkSize);
@@ -5633,14 +5726,8 @@
           }
         }
 
-        // 4. Standalone simulation fallback
-        await new Promise(r => setTimeout(r, 600));
-        closeImportModal();
-        currentFilter = "all_time";
-        ledgerPeriodSyncMode = "all";
-        await loadAnalytics("all_time");
-        await loadLiveTransactions();
-        showToast(`Import batch complete! ${pendingCsvRows.length} records processed.`, "success");
+        // Never claim a financial import succeeded without a real backend/database write.
+        throw new Error("Import could not be completed against the live database. No records were simulated or marked as imported.");
 
       } catch (err) {
         showToast(err.message || "Failed to process import batch", "error");
@@ -5681,28 +5768,9 @@
       return Number(amount || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
-    // Authentic UAE Suppliers strictly from the 19 registered records
-    const REAL_UAE_RECORDS = [
-      { party_name: "SEWA", trn: "100394961500003", type: "purchases" },
-      { party_name: "Talabat", trn: "100000978500003", type: "sales" },
-      { party_name: "NATIONAL DAIRY L.L.C", trn: "100303591000003", type: "purchases" },
-      { party_name: "AL HAJJAN FOODSTUFF TRADING", trn: "100023718800003", type: "sales" },
-      { party_name: "Al Futtaim Logistics LLC", trn: "100234567890003", type: "sales" },
-      { party_name: "Emirates National Oil Co", trn: "100456789012003", type: "purchases" },
-      { party_name: "Emaar Properties PJSC", trn: "100345678901003", type: "sales" },
-      { party_name: "Sharaf DG Commercial", trn: "100567890123003", type: "purchases" },
-      { party_name: "Dubai Holding Tech LLC", trn: "100678901234003", type: "sales" },
-      { party_name: "DEWA Utility Services", trn: "100901234567003", type: "purchases" },
-      { party_name: "Etisalat Telecommunications", trn: "100012345678003", type: "purchases" },
-      { party_name: "Du Telecom PJSC", trn: "100123456789003", type: "purchases" },
-      { party_name: "ADNOC Distribution", trn: "100234567891003", type: "purchases" },
-      { party_name: "Lulu Hypermarket LLC", trn: "100345678912003", type: "sales" },
-      { party_name: "Carrefour Majid Al Futtaim", trn: "100456789123003", type: "sales" },
-      { party_name: "Almarai Emirates LLC", trn: "100567891234003", type: "purchases" },
-      { party_name: "Aramex Emirates LLC", trn: "100678912345003", type: "purchases" },
-      { party_name: "Agthia Group PJSC", trn: "100789012345003", type: "sales" },
-      { party_name: "DP World UAE Region", trn: "100890123456003", type: "sales" }
-    ];
+    // Supplier directory cache populated only from real backend data.
+    // Never seed this admin dashboard with fabricated supplier names/TRNs.
+    const REAL_UAE_RECORDS = [];
 
     // Load custom suppliers saved in localStorage
     try {
@@ -5987,7 +6055,7 @@
       tbody.innerHTML = `<tr><td colspan="5" class="py-6 text-center text-slate-400 text-xs font-medium">Loading user directory...</td></tr>`;
 
       let usersList = [];
-      const currentUser = (localStorage.getItem("auth_user") || "Shareef").toLowerCase().trim();
+      const currentUser = (getAuthUser() || "").toLowerCase().trim();
 
       // 1. Fetch via desktop pywebview if available
       try {
@@ -6465,7 +6533,27 @@
 
         if (settings && settings.success) {
           if (urlInput && settings.supabase_url) urlInput.value = settings.supabase_url;
-          if (keyInput && settings.supabase_key) keyInput.value = settings.supabase_key;
+
+          const secretManaged = settings.secret_managed_by_secret_manager === true;
+          if (keyInput) {
+            keyInput.dataset.managedBySecretManager = secretManaged ? "true" : "false";
+            keyInput.value = "";
+            keyInput.disabled = secretManaged;
+            keyInput.placeholder = secretManaged
+              ? "Managed by Google Cloud Secret Manager"
+              : "Enter local development key";
+          }
+
+          const modeBadge = document.getElementById("settings-secret-mode-badge");
+          if (modeBadge) {
+            modeBadge.textContent = secretManaged
+              ? "Production: Secret Manager"
+              : "Local configuration only";
+            modeBadge.className = secretManaged
+              ? "text-[10px] text-emerald-700 font-bold"
+              : "text-[10px] text-slate-500";
+          }
+
           if (vatInput && settings.default_vat_rate !== undefined) {
             vatInput.value = Number(settings.default_vat_rate).toFixed(1);
             currentVatRate = Number(settings.default_vat_rate);
@@ -6555,13 +6643,16 @@
       const alertEl = document.getElementById("settings-modal-alert");
 
       const supabase_url = urlInput ? urlInput.value.trim() : "";
+      const secretManaged = keyInput?.dataset.managedBySecretManager === "true";
       const supabase_key = keyInput ? keyInput.value.trim() : "";
       const default_vat_rate = vatInput ? parseFloat(vatInput.value) : 5.0;
 
-      if (!supabase_url || !supabase_key) {
+      if (!supabase_url || (!secretManaged && !supabase_key)) {
         if (alertEl) {
           alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-rose-50 text-rose-800 border border-rose-200 block";
-          alertEl.textContent = "Please fill in both SUPABASE_URL and SUPABASE_KEY.";
+          alertEl.textContent = secretManaged
+            ? "Please provide SUPABASE_URL."
+            : "Please fill in both SUPABASE_URL and SUPABASE_KEY.";
         }
         return;
       }
@@ -6577,7 +6668,11 @@
           const res = await fetch("/api/settings", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ supabase_url, supabase_key, default_vat_rate })
+            body: JSON.stringify({
+              supabase_url,
+              supabase_key: secretManaged ? "" : supabase_key,
+              default_vat_rate
+            })
           });
           saveResult = await res.json();
         }
@@ -6586,7 +6681,9 @@
           currentVatRate = default_vat_rate;
           if (alertEl) {
             alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 block";
-            alertEl.textContent = "✓ Settings saved securely! Database credentials updated and Supabase client reloaded.";
+            alertEl.textContent = secretManaged
+              ? "✓ VAT setting saved. Production database credentials remain managed by Secret Manager."
+              : "✓ Local settings saved successfully.";
           }
           
           // Re-check backend bridge status
@@ -6972,25 +7069,20 @@
             token = getAuthToken();
           }
 
-          let response = await fetch("/api/transactions", {
-            headers: token ? { "Authorization": `Bearer ${token}` } : {}
-          });
-
-          // If session expired or unauthenticated, attempt re-auth and retry once
-          if (response.status === 401) {
-            const reauthOk = await checkAdminAuthSession();
-            if (reauthOk) {
-              const newToken = getAuthToken();
-              response = await fetch("/api/transactions", {
-                headers: newToken ? { "Authorization": `Bearer ${newToken}` } : {}
-              });
+          try {
+            records = await fetchAllTransactionsFromServer();
+          } catch (serverErr) {
+            if (Number(serverErr?.status) === 401) {
+              const reauthOk = await checkAdminAuthSession();
+              if (reauthOk) {
+                records = await fetchAllTransactionsFromServer();
+              } else {
+                throw serverErr;
+              }
+            } else {
+              throw serverErr;
             }
           }
-
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: Failed to fetch live transactions`);
-          }
-          records = await response.json();
         }
 
         // Normalize response if wrapped in an object
@@ -7829,9 +7921,10 @@
             const resp = await fetch(`${endpoint}?${params.toString()}`);
             if (resp.ok) {
               const data = await resp.json();
-              if (data && data.success && data.csv) {
+              const csvPayload = data && (data.csv_content || data.csv);
+              if (data && data.success && csvPayload) {
                 // Download CSV with UTF-8 BOM
-                const blob = new Blob([data.csv], { type: "text/csv;charset=utf-8;" });
+                const blob = new Blob([csvPayload], { type: "text/csv;charset=utf-8;" });
                 const url = URL.createObjectURL(blob);
                 const link = document.createElement("a");
                 link.setAttribute("href", url);
@@ -7895,7 +7988,17 @@
         totalWith += parseFloat(r.amount_with_tax) || 0;
       });
 
-      const todayStr = new Date().toISOString().split("T")[0];
+      let todayStr;
+      try {
+        todayStr = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Dubai",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit"
+        }).format(new Date());
+      } catch (err) {
+        todayStr = new Date().toLocaleDateString("en-CA");
+      }
       const filename = `UAE_${isSales ? 'Sales' : 'Purchases'}_Ledger_${todayStr}.csv`;
 
       // UTF-8-SIG BOM (\ufeff)
@@ -7991,7 +8094,12 @@
               const data = await resp.json();
               if (data && data.success) {
                 generated = true;
-                showToast(`✓ Landscape A4 ${title} PDF generated: ${data.filepath || data.filename}`, "success");
+                if (Array.isArray(data.transactions)) {
+                  printDedicatedLedgerDocument(type, data.transactions);
+                } else {
+                  printDedicatedLedgerDocument(type);
+                }
+                showToast(`✓ Landscape A4 ${title} prepared for printing from live data.`, "success");
               }
             }
           } catch (apiErr) {
@@ -8018,7 +8126,7 @@
     /**
      * Standalone Landscape A4 Printable Window for Single/General Ledger
      */
-    function printDedicatedLedgerDocument(type) {
+    function printDedicatedLedgerDocument(type, sourceRecords = null) {
       const isSales = (type === "sales");
       const isPurchases = (type === "purchases");
       const isAll = (type === "all");
@@ -8031,7 +8139,9 @@
       const lightTheme = isSales ? "#ecfdf5" : (isPurchases ? "#fff1f2" : "#eef2ff");
 
       // Filter transactions matching type and active search/date
-      let records = [...allLedgerTransactions];
+      let records = Array.isArray(sourceRecords)
+        ? [...sourceRecords]
+        : [...allLedgerTransactions];
 
       if (isSales) {
         records = records.filter(tx => String(tx.transaction_type || "").toLowerCase().trim() === "sales");
@@ -8178,118 +8288,150 @@
     // ------------------------------------------------------------------------
     // CSP-COMPLIANT AUTOMATIC PROGRAMMATIC EVENT BINDING ENGINE (CQ-08)
     // ------------------------------------------------------------------------
+    function splitHandlerArguments(argsStr) {
+      const args = [];
+      let current = "";
+      let quote = null;
+      let depth = 0;
+
+      for (let i = 0; i < argsStr.length; i++) {
+        const ch = argsStr[i];
+
+        if (quote) {
+          current += ch;
+          if (ch === quote && argsStr[i - 1] !== "\\") quote = null;
+          continue;
+        }
+
+        if (ch === "'" || ch === '"' || ch === String.fromCharCode(96)) {
+          quote = ch;
+          current += ch;
+          continue;
+        }
+
+        if (ch === "(" || ch === "[" || ch === "{") depth++;
+        if (ch === ")" || ch === "]" || ch === "}") depth--;
+
+        if (ch === "," && depth === 0) {
+          args.push(current.trim());
+          current = "";
+          continue;
+        }
+
+        current += ch;
+      }
+
+      if (current.trim()) args.push(current.trim());
+      return args;
+    }
+
     function executeInlineHandler(el, handlerStr, event) {
       if (!handlerStr) return;
-      const statements = handlerStr.split(';').map(s => s.trim()).filter(Boolean);
-      
+
+      const statements = handlerStr.split(";").map(s => s.trim()).filter(Boolean);
+
       for (const statement of statements) {
-        if (statement.startsWith('event.stopPropagation()')) {
+        if (statement === "event.stopPropagation()") {
           event.stopPropagation();
           continue;
         }
-        if (statement.startsWith('event.preventDefault()')) {
+
+        if (statement === "event.preventDefault()") {
           event.preventDefault();
           continue;
         }
 
-        // Direct element style/class show/hide manipulations
-        const toastMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.add\(['"]([^'"]+)['"]\)/);
-        if (toastMatch) {
-          const targetEl = document.getElementById(toastMatch[1]);
-          if (targetEl) targetEl.classList.add(toastMatch[2]);
-          continue;
-        }
-        const toastRemoveMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.remove\(['"]([^'"]+)['"]\)/);
-        if (toastRemoveMatch) {
-          const targetEl = document.getElementById(toastRemoveMatch[1]);
-          if (targetEl) targetEl.classList.remove(toastRemoveMatch[2]);
+        const addClassMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.add\(['"]([^'"]+)['"]\)/);
+        if (addClassMatch) {
+          const target = document.getElementById(addClassMatch[1]);
+          if (target) target.classList.add(addClassMatch[2]);
           continue;
         }
 
-        // Click emulation trigger
+        const removeClassMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.remove\(['"]([^'"]+)['"]\)/);
+        if (removeClassMatch) {
+          const target = document.getElementById(removeClassMatch[1]);
+          if (target) target.classList.remove(removeClassMatch[2]);
+          continue;
+        }
+
         const clickMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.click\(\)/);
         if (clickMatch) {
-          const targetEl = document.getElementById(clickMatch[1]);
-          if (targetEl) targetEl.click();
+          const target = document.getElementById(clickMatch[1]);
+          if (target) target.click();
           continue;
         }
 
-        // Function call: functionName(arguments)
-        const match = statement.match(/^([a-zA-Z0-9_$]+)\((.*)\)$/);
-        if (match) {
-          const funcName = match[1];
-          const argsStr = match[2].trim();
-          const fn = window[funcName];
-          if (typeof fn === 'function') {
-            const args = [];
-            if (argsStr) {
-              const rawArgs = argsStr.split(',').map(a => a.trim());
-              for (const rawArg of rawArgs) {
-                if (rawArg === 'event') {
-                  args.push(event);
-                } else if (rawArg === 'this') {
-                  args.push(el);
-                } else if (rawArg === 'this.value') {
-                  args.push(el.value);
-                } else if (rawArg === 'this.checked') {
-                  args.push(el.checked);
-                } else if ((rawArg.startsWith("'") && rawArg.endsWith("'")) || (rawArg.startsWith('"') && rawArg.endsWith('"'))) {
-                  args.push(rawArg.slice(1, -1));
-                } else if (rawArg.startsWith(String.fromCharCode(96)) && rawArg.endsWith(String.fromCharCode(96))) {
-                  args.push(rawArg.slice(1, -1)); // simple template string fallback
-                } else {
-                  if (!isNaN(rawArg) && rawArg !== '') {
-                    args.push(Number(rawArg));
-                  } else {
-                    args.push(window[rawArg] !== undefined ? window[rawArg] : rawArg);
-                  }
-                }
-              }
+        const callMatch = statement.match(/^([A-Za-z_$][\w$]*)\((.*)\)$/);
+        if (!callMatch) continue;
+
+        const fnName = callMatch[1];
+        const fn = window[fnName];
+        if (typeof fn !== "function") {
+          console.warn("[EVENT-BIND] Function window." + fnName + " is not defined.");
+          continue;
+        }
+
+        const args = [];
+        const argsStr = callMatch[2].trim();
+
+        if (argsStr) {
+          for (const rawArg of splitHandlerArguments(argsStr)) {
+            if (rawArg === "event") args.push(event);
+            else if (rawArg === "this") args.push(el);
+            else if (rawArg === "this.value") args.push(el.value);
+            else if (rawArg === "this.checked") args.push(el.checked);
+            else if ((rawArg.startsWith("'") && rawArg.endsWith("'")) || (rawArg.startsWith('"') && rawArg.endsWith('"'))) {
+              args.push(rawArg.slice(1, -1));
+            } else if (rawArg.startsWith(String.fromCharCode(96)) && rawArg.endsWith(String.fromCharCode(96))) {
+              args.push(rawArg.slice(1, -1));
+            } else if (rawArg === "true" || rawArg === "false") {
+              args.push(rawArg === "true");
+            } else if (rawArg === "null") {
+              args.push(null);
+            } else if (!isNaN(rawArg) && rawArg !== "") {
+              args.push(Number(rawArg));
+            } else {
+              args.push(window[rawArg] !== undefined ? window[rawArg] : rawArg);
             }
-            fn.apply(el, args);
-          } else {
-            console.warn("[EVENT-BIND] Function window." + funcName + " is not defined.");
           }
+        }
+
+        try {
+          const result = fn.apply(el, args);
+          if (result && typeof result.then === "function") {
+            result.catch(err => console.error("[EVENT-BIND] Async handler failed:", fnName, err));
+          }
+        } catch (err) {
+          console.error("[EVENT-BIND] Handler failed:", fnName, err);
         }
       }
     }
 
     onReady(() => {
-      console.log("[EVENT-BIND] Initializing programmatic CSP event bindings...");
-      
-      // Bind click handlers (data-onclick)
-      document.querySelectorAll('[data-onclick]').forEach(el => {
-        el.addEventListener('click', (e) => {
-          const handlerStr = el.getAttribute('data-onclick');
-          executeInlineHandler(el, handlerStr, e);
+      console.log("[EVENT-BIND] Installing delegated event handlers for static and dynamic elements...");
+
+      const delegatedBindings = [
+        ["click", "data-onclick"],
+        ["submit", "data-onsubmit"],
+        ["change", "data-onchange"],
+        ["input", "data-oninput"]
+      ];
+
+      delegatedBindings.forEach(([eventType, attribute]) => {
+        document.addEventListener(eventType, event => {
+          const target = event.target;
+          const candidate = target && typeof target.closest === "function"
+            ? target.closest("[" + attribute + "]")
+            : null;
+
+          if (!candidate) return;
+
+          executeInlineHandler(candidate, candidate.getAttribute(attribute), event);
         });
       });
 
-      // Bind submit handlers (data-onsubmit)
-      document.querySelectorAll('[data-onsubmit]').forEach(el => {
-        el.addEventListener('submit', (e) => {
-          const handlerStr = el.getAttribute('data-onsubmit');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
-
-      // Bind change handlers (data-onchange)
-      document.querySelectorAll('[data-onchange]').forEach(el => {
-        el.addEventListener('change', (e) => {
-          const handlerStr = el.getAttribute('data-onchange');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
-
-      // Bind input handlers (data-oninput)
-      document.querySelectorAll('[data-oninput]').forEach(el => {
-        el.addEventListener('input', (e) => {
-          const handlerStr = el.getAttribute('data-oninput');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
-
-      console.log("[EVENT-BIND] Programmatic event bindings complete.");
+      console.log("[EVENT-BIND] Delegated handlers ready. Dynamic elements are supported.");
     });
 </script>
 </body>
