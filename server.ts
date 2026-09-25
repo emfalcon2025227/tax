@@ -822,33 +822,54 @@ app.get("/api/settings", requireOwner, (req: Request, res: Response) => {
   let maskedKey = "";
   if (key) {
     if (key.length > 8) {
-      maskedKey = key.slice(0, 4) + "•".repeat(key.length - 8) + key.slice(-4);
+      maskedKey = key.slice(0, 4) + "•".repeat(Math.max(0, key.length - 8)) + key.slice(-4);
     } else {
       maskedKey = "••••••••";
     }
   }
+
   res.json({
     success: true,
     supabase_url: url,
-    supabase_key: key,
     supabase_key_masked: maskedKey,
+    supabase_key_configured: Boolean(key),
+    secret_managed_by_secret_manager: isProd,
     default_vat_rate: cfg.default_vat_rate ?? 5.0
   });
 });
 
 app.post("/api/settings", requireOwner, (req: Request, res: Response) => {
   const { supabase_url, supabase_key, default_vat_rate } = req.body;
-  if (!supabase_url || !supabase_key) {
-    return res.status(400).json({ error: "Both SUPABASE_URL and SUPABASE_KEY are required." });
+  const parsedVatRate = Number(default_vat_rate);
+
+  if (!Number.isFinite(parsedVatRate) || parsedVatRate < 0 || parsedVatRate > 100) {
+    return res.status(400).json({ error: "default_vat_rate must be a number between 0 and 100." });
   }
-  const vatRate = parseFloat(default_vat_rate) || 5.0;
+
+  // Production credentials are managed only by Cloud Run/Secret Manager.
+  // Never write production secrets into the application filesystem.
+  if (isProd) {
+    writeConfigJson({ default_vat_rate: parsedVatRate });
+    return res.json({
+      success: true,
+      secret_managed_by_secret_manager: true,
+      message: "VAT setting saved. Supabase production credentials remain managed by Secret Manager.",
+      supabase_url: getSupabaseConfig().url,
+      default_vat_rate: parsedVatRate
+    });
+  }
+
+  if (!supabase_url || !supabase_key) {
+    return res.status(400).json({ error: "Both SUPABASE_URL and SUPABASE_KEY are required outside production." });
+  }
+
   updateEnvFile(supabase_url.trim(), supabase_key.trim());
-  writeConfigJson({ default_vat_rate: vatRate });
+  writeConfigJson({ default_vat_rate: parsedVatRate });
   res.json({
     success: true,
     message: "Settings saved successfully! Database credentials updated and client reloaded.",
     supabase_url: supabase_url.trim(),
-    default_vat_rate: vatRate
+    default_vat_rate: parsedVatRate
   });
 });
 
