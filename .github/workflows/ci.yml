@@ -36,26 +36,4 @@ jobs:
         run: node --check dist/server.cjs
 
       - name: Validate embedded HTML JavaScript
-        run: |
-          node <<'NODE'
-          const fs = require('fs');
-
-          for (const file of ['index.html', 'admin.html']) {
-            const html = fs.readFileSync(file, 'utf8');
-            const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)].map(m => m[1]);
-
-            if (scripts.length === 0) {
-              throw new Error(file + ': no script blocks found');
-            }
-
-            scripts.forEach((script, index) => {
-              try {
-                new Function(script);
-              } catch (error) {
-                throw new Error(file + ': script #' + index + ' syntax error: ' + error.message);
-              }
-            });
-
-            console.log(file + ': ' + scripts.length + ' script block(s) passed syntax validation.');
-          }
-          NODE
+        run: npm run check:html
