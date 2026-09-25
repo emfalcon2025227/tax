@@ -4738,9 +4738,12 @@
             showToast(res ? res.error : "Failed to generate report", "error");
           }
         } else {
-          // Client Fallback Excel generation respecting active filters and strict column ordering:
-          // Seq | Date | Invoice No | Party Name | TRN | Amount With Tax | VAT 5% | Amount Before Tax
-          const currentData = activeAnalyticsData || simulateAnalytics(currentFilter, currentDateFrom, currentDateTo, currentSearch);
+          // Client fallback is allowed only when real live analytics data is already loaded.
+          // Never generate an accounting report from an empty/simulated dataset.
+          const currentData = activeAnalyticsData;
+          if (!currentData || !Array.isArray(currentData.transactions)) {
+            throw new Error("Live accounting data is unavailable. Excel export was not generated.");
+          }
           const rows = [
             ["Seq", "Date", "Invoice No", "Party Name", "TRN", "Amount With Tax", "VAT 5%", "Amount Before Tax"]
           ];
