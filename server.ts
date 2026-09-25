@@ -39,16 +39,11 @@ if (isProd) {
   }
 }
 
-const DEFAULT_SUPABASE_URL = "https://frmgpbwbmarkatjroflr.supabase.co";
-const DEFAULT_SUPABASE_KEY = "sb_secret_lESPIyr1EUoMeckMYNPhBQ_wOBAaMya";
-
-const rawAuthSecret = (process.env.AUTH_SECRET_KEY || process.env.JWT_SECRET || "uae_tax_accounting_system_secure_secret_2026_jwt").trim();
+const rawAuthSecret = (process.env.AUTH_SECRET_KEY || process.env.JWT_SECRET || "").trim();
 const AUTH_SECRET_KEY: string = rawAuthSecret;
 
-const rawSupabaseUrl = (process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, "");
-const rawSupabaseKey = (process.env.SUPABASE_KEY || DEFAULT_SUPABASE_KEY).trim();
-const SUPABASE_URL: string = rawSupabaseUrl;
-const SUPABASE_KEY: string = rawSupabaseKey;
+const SUPABASE_URL: string = (process.env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
+const SUPABASE_KEY: string = (process.env.SUPABASE_KEY || "").trim();
 
 function getUAECurrentDate(): string {
   try {
@@ -350,8 +345,8 @@ function updateEnvFile(url: string, key: string) {
 
 // Helper to safely get Supabase credentials with fallback defaults
 function getSupabaseConfig(): { url: string; key: string } {
-  const url = (process.env.SUPABASE_URL || SUPABASE_URL || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, "");
-  const key = (process.env.SUPABASE_KEY || SUPABASE_KEY || DEFAULT_SUPABASE_KEY).trim();
+  const url = (process.env.SUPABASE_URL || SUPABASE_URL || "").trim().replace(/\/+$/, "");
+  const key = (process.env.SUPABASE_KEY || SUPABASE_KEY || "").trim();
   return { url, key };
 }
 
@@ -1004,7 +999,7 @@ app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, re
 
 app.post("/api/test-connection", requireOwner, async (req: Request, res: Response) => {
   const targetUrl = (req.body.supabase_url || process.env.SUPABASE_URL || "https://frmgpbwbmarkatjroflr.supabase.co").replace(/\/+$/, "");
-  const targetKey = req.body.supabase_key || process.env.SUPABASE_KEY || "sb_secret_lESPIyr1EUoMeckMYNPhBQ_wOBAaMya";
+  const targetKey = req.body.supabase_key || process.env.SUPABASE_KEY || "";
   try {
     const check = await fetch(`${targetUrl}/rest/v1/suppliers?select=name,trn&limit=1`, {
       headers: {
