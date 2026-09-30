@@ -537,8 +537,8 @@ app.put("/api/users/:identifier", userMutationLimiter, requireOwner, async (req:
   }
 
   const { url, key } = getSupabaseConfig();
-  const filter = /^\d+$/.test(identifier)
-    ? `id=eq.${encodeURIComponent(identifier)}`
+  const filter = /^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\}?$/.test(identifier)
+    ? `id=eq.${encodeURIComponent(identifier.replace(/[{}]/g, ""))}`
     : `username=eq.${encodeURIComponent(identifier)}`;
 
   try {
@@ -588,8 +588,8 @@ app.delete("/api/users/:identifier", requireOwner, async (req: Request, res: Res
   }
 
   const { url, key } = getSupabaseConfig();
-  const filter = /^\d+$/.test(identifier)
-    ? `id=eq.${encodeURIComponent(identifier)}`
+  const filter = /^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\}?$/.test(identifier)
+    ? `id=eq.${encodeURIComponent(identifier.replace(/[{}]/g, ""))}`
     : `username=eq.${encodeURIComponent(identifier)}`;
 
   try {
