@@ -816,41 +816,47 @@ app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, re
     });
   }
 
-  const targetDate = (req.query.date as string) || (req.body?.date as string) || "";
-  const dryRun = String(req.query.dry_run || req.body?.dry_run || "").toLowerCase() === "true" || req.query.dry_run === "1";
+  if (isProd) {
+    return res.status(503).json({
+      success: false,
+      error: "Daily report is not available in this Node.js Cloud Run build. No simulation or legacy Python fallback is used."
+    });
+  }
 
-  // Execute admin_backend.py with arguments
+  const targetDate = String(req.query.date || req.body?.date || "").trim();
   const args = ["admin_backend.py", "--daily-report"];
-  if (targetDate) {
-    args.push("--date", targetDate);
-  }
-  if (dryRun) {
-    args.push("--dry-run");
-  }
+  if (targetDate) args.push("--date", targetDate);
 
   const { spawn } = await import("child_process");
   const py = spawn("python3", args, { cwd: process.cwd() });
   let stdout = "";
   let stderr = "";
 
-  py.stdout.on("data", (data) => { stdout += data.toString(); });
-  py.stderr.on("data", (data) => { stderr += data.toString(); });
+  py.stdout.on("data", data => { stdout += data.toString(); });
+  py.stderr.on("data", data => { stderr += data.toString(); });
 
-  py.on("close", (code) => {
+  py.on("close", code => {
     const jsonMatch = stdout.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]);
         return res.status(parsed.success ? 200 : 500).json(parsed);
-      } catch (e) {
-        // Fall through
-      }
+      } catch {}
     }
     if (code === 0) {
-      return res.json({ success: true, stdout, message: "Report processed successfully" });
-    } else {
-      return res.status(500).json({ success: false, error: stderr || stdout || `Process exited with code ${code}` });
+      return res.json({ success: true, stdout, message: "Report processed successfully." });
     }
+    return res.status(500).json({
+      success: false,
+      error: stderr || stdout || `Report process exited with code ${code}.`
+    });
+  });
+
+  py.on("error", err => {
+    return res.status(503).json({
+      success: false,
+      error: `Report service unavailable: ${err.message}`
+    });
   });
 });
 
