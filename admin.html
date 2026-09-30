@@ -2135,11 +2135,8 @@
             <span>⏱️</span>
             <span>Automated Scheduling & Cron Setup</span>
           </div>
-          <p>The daily financial report can be scheduled via operating system cron (Linux/macOS) or Windows Task Scheduler:</p>
-          <div class="bg-slate-900 text-emerald-400 font-mono text-[10px] p-2 rounded-md overflow-x-auto select-all">
-            0 8 * * * cd /path/to/project &amp;&amp; python3 admin_backend.py --daily-report
-          </div>
-          <p class="text-[10px] text-slate-500">Alternatively, trigger via HTTP Webhook: <code class="font-mono text-slate-800">POST /api/cron/daily-report</code> with header <code class="font-mono text-slate-800">x-cron-secret</code>.</p>
+          <p>The daily financial report scheduler is not enabled in the Node.js Cloud Run build. It will not simulate or fabricate a report when the reporting service is unavailable.</p>
+          <p class="text-[10px] text-slate-500">No legacy desktop/Python execution path is used by the Cloud deployment.</p>
         </div>
 
       </div>
@@ -3381,12 +3378,6 @@
     window.supabaseClient = createSecureSupabaseProxyClient();
 
     async function checkBackendBridge() {
-      // Clean up legacy secret key from browser localStorage if present
-      const storedKey = localStorage.getItem("APP_SUPABASE_KEY") || "";
-      if (storedKey.startsWith("sb_secret_")) {
-        localStorage.removeItem("APP_SUPABASE_KEY");
-      }
-
       const dot = document.getElementById("bridge-status-dot");
       const label = document.getElementById("bridge-status-label");
 
