@@ -6209,58 +6209,52 @@
       if (modal) modal.classList.add("hidden");
     }
 
-    function toggleKeyVisibility() {
-      const input = document.getElementById("settings-supabase-key");
-      const eyeIcon = document.getElementById("eye-icon-svg");
-      if (!input) return;
-
-      if (input.type === "password") {
-        input.type = "text";
-        if (eyeIcon) {
-          eyeIcon.innerHTML = `
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18"></path>
-          `;
-        }
-      } else {
-        input.type = "password";
-        if (eyeIcon) {
-          eyeIcon.innerHTML = `
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
-          `;
-        }
-      }
-    }
-
     async function loadSystemSettings() {
-      const urlInput = document.getElementById("settings-supabase-url");
-      const keyInput = document.getElementById("settings-supabase-key");
       const vatInput = document.getElementById("settings-vat-rate");
+      const dbState = document.getElementById("settings-db-state");
 
       try {
-        let settings = null;
-        if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_settings === "function") {
-          settings = await window.pywebview.api.get_settings();
-        } else {
-          const res = await fetch("/api/settings");
-          if (res.ok) {
-            settings = await res.json();
-          }
+        const res = await fetch("/api/settings");
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || `HTTP ${res.status}: Unable to load settings.`);
         }
 
-        if (settings && settings.success) {
-          if (urlInput && settings.supabase_url) urlInput.value = settings.supabase_url;
-          if (keyInput) {
-            keyInput.value = "";
-            keyInput.placeholder = settings.supabase_key_masked ? `Configured (${settings.supabase_key_masked}) - Leave blank to keep existing` : "Enter Supabase Key / Secret";
+        if (vatInput && data.default_vat_rate !== undefined) {
+          vatInput.value = Number(data.default_vat_rate).toFixed(1);
+          currentVatRate = Number(data.default_vat_rate);
+        }
+
+        if (dbState) {
+          dbState.textContent = "Server Configured";
+          dbState.className = "text-[10px] font-extrabold px-2 py-1 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200";
+        }
+
+        try {
+          const statusRes = await fetch("/api/status");
+          const statusData = await statusRes.json().catch(() => ({}));
+          if (statusData.supabase_connected) {
+            if (dbState) {
+              dbState.textContent = "Database Connected";
+              dbState.className = "text-[10px] font-extrabold px-2 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200";
+            }
+          } else if (dbState) {
+            dbState.textContent = "Database Unavailable";
+            dbState.className = "text-[10px] font-extrabold px-2 py-1 rounded-full bg-rose-100 text-rose-800 border border-rose-200";
           }
-          if (vatInput && settings.default_vat_rate !== undefined) {
-            vatInput.value = Number(settings.default_vat_rate).toFixed(1);
-            currentVatRate = Number(settings.default_vat_rate);
+        } catch {
+          if (dbState) {
+            dbState.textContent = "Status Unavailable";
+            dbState.className = "text-[10px] font-extrabold px-2 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200";
           }
         }
       } catch (err) {
         console.warn("Could not fetch system settings:", err);
+        if (dbState) {
+          dbState.textContent = "Configuration Error";
+          dbState.className = "text-[10px] font-extrabold px-2 py-1 rounded-full bg-rose-100 text-rose-800 border border-rose-200";
+        }
       }
     }
 
@@ -6288,44 +6282,28 @@
     }
 
     async function testDatabaseConnection() {
-      const urlInput = document.getElementById("settings-supabase-url");
-      const keyInput = document.getElementById("settings-supabase-key");
       const testBtn = document.getElementById("btn-test-connection");
       const spinner = document.getElementById("test-spinner");
-
-      const url = urlInput ? urlInput.value.trim() : "";
-      const key = keyInput ? keyInput.value.trim() : "";
-
-      if (!url || !key) {
-        showConnectionBadge("error", "URL and Key required");
-        return;
-      }
 
       hideConnectionBadge();
       if (testBtn) testBtn.disabled = true;
       if (spinner) spinner.classList.remove("hidden");
 
       try {
-        let result = null;
-        if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.test_connection === "function") {
-          result = await window.pywebview.api.test_connection(url, key);
-        } else {
-          const res = await fetch("/api/test-connection", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ supabase_url: url, supabase_key: key })
-          });
-          result = await res.json();
-        }
+        const res = await fetch("/api/test-connection", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        });
+        const result = await res.json().catch(() => ({}));
 
-        if (result && result.status === "success") {
+        if (res.ok && result.status === "success") {
           showConnectionBadge("success", "Connection Verified");
         } else {
-          const errMsg = result && result.message ? result.message : "Authentication error";
-          showConnectionBadge("error", errMsg.length > 40 ? errMsg.substring(0, 37) + "..." : errMsg);
+          showConnectionBadge("error", result.message || result.error || `HTTP ${res.status}: Connection failed`);
         }
-      } catch (err) {
-        showConnectionBadge("error", "Network / Bridge Error");
+      } catch {
+        showConnectionBadge("error", "Network / Server Error");
       } finally {
         if (testBtn) testBtn.disabled = false;
         if (spinner) spinner.classList.add("hidden");
@@ -6335,21 +6313,17 @@
     async function handleSaveSettings(event) {
       if (event) event.preventDefault();
 
-      const urlInput = document.getElementById("settings-supabase-url");
-      const keyInput = document.getElementById("settings-supabase-key");
       const vatInput = document.getElementById("settings-vat-rate");
       const saveBtn = document.getElementById("btn-save-settings");
       const saveSpinner = document.getElementById("save-spinner");
       const alertEl = document.getElementById("settings-modal-alert");
 
-      const supabase_url = urlInput ? urlInput.value.trim() : "";
-      const supabase_key = keyInput ? keyInput.value.trim() : "";
-      const default_vat_rate = vatInput ? parseFloat(vatInput.value) : 5.0;
+      const default_vat_rate = vatInput ? Number(vatInput.value) : 5.0;
 
-      if (!supabase_url) {
+      if (!Number.isFinite(default_vat_rate) || default_vat_rate < 0 || default_vat_rate > 100) {
         if (alertEl) {
           alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-rose-50 text-rose-800 border border-rose-200 block";
-          alertEl.textContent = "Please fill in SUPABASE_URL.";
+          alertEl.textContent = "VAT rate must be a valid number between 0 and 100.";
         }
         return;
       }
@@ -6358,43 +6332,30 @@
       if (saveSpinner) saveSpinner.classList.remove("hidden");
 
       try {
-        let saveResult = null;
-        if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.save_settings === "function") {
-          saveResult = await window.pywebview.api.save_settings(supabase_url, supabase_key, default_vat_rate);
-        } else {
-          const res = await fetch("/api/settings", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ supabase_url, supabase_key, default_vat_rate })
-          });
-          saveResult = await res.json();
+        const res = await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ default_vat_rate })
+        });
+        const saveResult = await res.json().catch(() => ({}));
+
+        if (!res.ok || !saveResult.success) {
+          throw new Error(saveResult.error || saveResult.message || `HTTP ${res.status}: Settings save failed.`);
         }
 
-        if (saveResult && saveResult.success) {
-          currentVatRate = default_vat_rate;
-          if (alertEl) {
-            alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 block";
-            alertEl.textContent = "✓ Settings saved securely! Database credentials updated and Supabase client reloaded.";
-          }
-          
-          // Re-check backend bridge status
-          checkBackendBridge();
-
-          // Refresh current analytics view to reflect new configurations
-          setTimeout(() => {
-            closeSettingsModal();
-            loadAnalytics(currentFilter);
-          }, 1200);
-        } else {
-          if (alertEl) {
-            alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-rose-50 text-rose-800 border border-rose-200 block";
-            alertEl.textContent = "✕ Error saving settings: " + (saveResult?.error || saveResult?.message || "Unknown error");
-          }
+        currentVatRate = default_vat_rate;
+        if (alertEl) {
+          alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 block";
+          alertEl.textContent = "✓ Tax settings saved successfully. Database credentials remain server-managed.";
         }
+
+        await loadSystemSettings();
+        await loadAnalytics(currentFilter);
+        setTimeout(() => closeSettingsModal(), 800);
       } catch (err) {
         if (alertEl) {
           alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-rose-50 text-rose-800 border border-rose-200 block";
-          alertEl.textContent = "✕ Failed to contact backend: " + (err.message || String(err));
+          alertEl.textContent = "✕ Failed to save settings: " + (err.message || String(err));
         }
       } finally {
         if (saveBtn) saveBtn.disabled = false;
