@@ -893,22 +893,24 @@ app.post("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
 });
 
 // Update Supplier (PUT /api/suppliers/:identifier or PUT /api/suppliers)
-
+app.put(["/api/suppliers/:identifier", "/api/suppliers"], requireAuth, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const identifier = String(req.params.identifier || req.body.identifier || req.body.old_trn || req.body.trn || req.body.id || "").trim();
-  const name = String(req.body.name || "").trim();
-  let trnRaw = String(req.body.trn || "").trim();
-  let trnDigits = trnRaw.replace(/\D/g, "");
+  const identifier = String(req.params.identifier || req.body?.identifier || req.body?.old_trn || req.body?.id || "").trim();
+  const name = String(req.body?.name || "").trim();
+  const trn = String(req.body?.trn || "").trim();
 
-  if (!name) {
-    return res.status(400).json({ success: false, error: "Party / Supplier name is required." });
+  if (!identifier) return res.status(400).json({ success: false, error: "Supplier identifier is required." });
+  if (!name) return res.status(400).json({ success: false, error: "Supplier name is required." });
+  if (!/^\d{15}$/.test(trn)) {
+    return res.status(400).json({ success: false, error: "Supplier TRN must contain exactly 15 numeric digits." });
   }
-  if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-  if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
-  const finalTrn = trnDigits || trnRaw;
+
+  const filter = /^\d+$/.test(identifier)
+    ? `id=eq.${encodeURIComponent(identifier)}`
+    : `trn=eq.${encodeURIComponent(identifier)}`;
 
   try {
-    const response = await fetch(`${url}/rest/v1/suppliers?or=(trn.eq.${encodeURIComponent(identifier)},id.eq.${encodeURIComponent(identifier)})`, {
+    const response = await fetch(`${url}/rest/v1/suppliers?${filter}`, {
       method: "PATCH",
       headers: {
         apikey: key,
@@ -916,21 +918,98 @@ app.post("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify({ name, trn: finalTrn })
+      body: JSON.stringify({ name, trn })
     });
-
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(500).json({ success: false, error: errText });
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Supplier update rejected by database." });
     }
-    const data = await response.json().catch(() => ([]));
-    return res.json({ success: true, message: `Supplier '${name}' updated successfully.`, supplier: { name, trn: finalTrn }, data });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    const rows = await response.json().catch(() => []);
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(404).json({ success: false, error: "Supplier not found." });
+    }
+    return res.json({ success: true, message: `Supplier '${name}' updated successfully.`, supplier: rows[0] });
+  } catch {
+    return res.status(503).json({ success: false, error: "Supplier service is temporarily unavailable." });
   }
 });
 
 // Delete Supplier (DELETE /api/suppliers/:identifier or DELETE /api/suppliers)
+app.delete(["/api/suppliers/:identifier", "/api/suppliers"], requireOwner, async (req: Request, res: Response) => {
+  const { url, key } = getSupabaseConfig();
+  const identifier = String(req.params.identifier || req.query.identifier || req.query.trn || req.body?.identifier || req.body?.trn || req.body?.id || "").trim();
+
+  if (!identifier) {
+    return res.status(400).json({ success: false, error: "Missing supplier identifier (TRN or ID)." });
+  }
+
+  const headers = {
+    apikey: key,
+    Authorization: `Bearer ${key}`
+  };
+
+  try {
+    const lookupFilter = /^\d{15}$/.test(identifier)
+      ? `trn=eq.${encodeURIComponent(identifier)}`
+      : /^\d+$/.test(identifier)
+        ? `id=eq.${encodeURIComponent(identifier)}`
+        : `name=eq.${encodeURIComponent(identifier)}`;
+
+    const supplierResp = await fetch(`${url}/rest/v1/suppliers?select=id,name,trn&${lookupFilter}`, { headers });
+    if (!supplierResp.ok) {
+      return res.status(supplierResp.status).json({ success: false, error: "Unable to locate supplier." });
+    }
+    const suppliers = await supplierResp.json().catch(() => []);
+    if (!Array.isArray(suppliers) || suppliers.length === 0) {
+      return res.status(404).json({ success: false, error: "Supplier not found." });
+    }
+    if (suppliers.length > 1) {
+      return res.status(409).json({ success: false, error: "Supplier identifier is not unique." });
+    }
+
+    const supplier = suppliers[0];
+    const supplierId = String(supplier.id);
+
+    // Prevent deletion when any existing transaction references the exact supplier TRN or party name.
+    const txOr = [];
+    if (supplier.trn) txOr.push(`trn.eq.${encodeURIComponent(String(supplier.trn))}`);
+    if (supplier.name) txOr.push(`party_name.eq.${encodeURIComponent(String(supplier.name))}`);
+
+    if (txOr.length > 0) {
+      const chkResp = await fetch(`${url}/rest/v1/transactions?select=id&or=(${txOr.join(",")})&limit=1`, { headers });
+      if (!chkResp.ok) {
+        return res.status(502).json({ success: false, error: "Unable to verify supplier transaction references." });
+      }
+      const chkData = await chkResp.json().catch(() => []);
+      if (Array.isArray(chkData) && chkData.length > 0) {
+        return res.status(409).json({
+          success: false,
+          error: "Cannot delete supplier because existing invoices reference this supplier."
+        });
+      }
+    }
+
+    const response = await fetch(`${url}/rest/v1/suppliers?id=eq.${encodeURIComponent(supplierId)}`, {
+      method: "DELETE",
+      headers: { ...headers, Prefer: "return=representation" }
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Supplier deletion rejected by database." });
+    }
+
+    const deleted = await response.json().catch(() => []);
+    if (!Array.isArray(deleted) || deleted.length !== 1) {
+      return res.status(404).json({ success: false, error: "Supplier was not deleted." });
+    }
+
+    return res.json({ success: true, message: `Supplier '${supplier.name}' deleted successfully.`, deleted: deleted[0] });
+  } catch {
+    return res.status(503).json({ success: false, error: "Supplier service is temporarily unavailable." });
+  }
+});
+
+
 app.delete(["/api/suppliers/:identifier", "/api/suppliers"], requireOwner, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
   const identifier = String(req.params.identifier || req.query.identifier || req.query.trn || req.body?.identifier || req.body?.trn || req.body?.id || "").trim();
@@ -977,14 +1056,6 @@ app.delete(["/api/suppliers/:identifier", "/api/suppliers"], requireOwner, async
     }
 
     try {
-      const cfg = readConfigJson();
-      if (!Array.isArray(cfg.deleted_suppliers)) {
-        cfg.deleted_suppliers = [];
-      }
-      if (!cfg.deleted_suppliers.includes(identifier)) {
-        cfg.deleted_suppliers.push(identifier);
-      }
-      writeConfigJson(cfg);
     } catch (e) {
       console.warn("Could not save deleted_suppliers to config.json:", e);
     }
