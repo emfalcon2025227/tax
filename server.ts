@@ -800,49 +800,34 @@ app.delete("/api/users/:identifier", requireOwner, async (req: Request, res: Res
 });
 
 // 0.1 Settings & Dynamic Supabase Configuration (Owner Only)// 0.1 Settings & Dynamic Supabase Configuration (Owner Only)
-app.get("/api/settings", requireOwner, (req: Request, res: Response) => {
-  const { url, key } = getSupabaseConfig();
+app.get("/api/settings", requireOwner, (_req: Request, res: Response) => {
   const cfg = readConfigJson();
-  let maskedKey = "";
-  if (key) {
-    if (key.length > 8) {
-      maskedKey = key.slice(0, 4) + "•".repeat(key.length - 8) + key.slice(-4);
-    } else {
-      maskedKey = "••••••••";
-    }
-  }
-  res.json({
+  return res.json({
     success: true,
-    supabase_url: url,
+    supabase_url: SUPABASE_URL,
     supabase_key: "",
-    supabase_key_masked: maskedKey,
-    has_supabase_key: Boolean(key),
-    default_vat_rate: cfg.default_vat_rate ?? 5.0
+    supabase_key_masked: "",
+    has_supabase_key: Boolean(SUPABASE_KEY),
+    default_vat_rate: 5.0,
+    report_recipients: Array.isArray(cfg.report_recipients) ? cfg.report_recipients : []
   });
 });
 
 app.post("/api/settings", requireOwner, (req: Request, res: Response) => {
-  const { supabase_url, supabase_key, default_vat_rate } = req.body;
-  if (!supabase_url) {
-    return res.status(400).json({ error: "SUPABASE_URL is required." });
+  const requestedRate = req.body?.default_vat_rate;
+  const rate = requestedRate === undefined ? 5 : Number(requestedRate);
+  if (!Number.isFinite(rate) || rate !== 5) {
+    return res.status(400).json({ success: false, error: "The application uses a fixed UAE VAT rate of 5.0%." });
   }
-  const currentCfg = getSupabaseConfig();
-  const keyToSave = (!supabase_key || supabase_key.includes("•") || supabase_key === "") ? currentCfg.key : supabase_key;
-  if (!keyToSave) {
-    return res.status(400).json({ error: "SUPABASE_KEY is required." });
-  }
-  const vatRate = parseFloat(default_vat_rate) || 5.0;
-  updateEnvFile(supabase_url.trim(), keyToSave.trim());
-  writeConfigJson({ default_vat_rate: vatRate });
-  res.json({
+  writeConfigJson({ ...readConfigJson(), default_vat_rate: 5 });
+  return res.json({
     success: true,
-    message: "Settings saved successfully! Database credentials updated and client reloaded.",
-    supabase_url: supabase_url.trim(),
-    default_vat_rate: vatRate
+    message: "System settings saved. Database credentials are deployment-managed and cannot be changed from the browser.",
+    default_vat_rate: 5
   });
 });
 
-// 0.2 Report Recipients Settings
+// 0.2 Report Recipients Settings// 0.2 Report Recipients Settings
 app.get("/api/settings/recipients", requireAuth, async (req: Request, res: Response) => {
   try {
     const { url, key } = getSupabaseConfig();
@@ -987,59 +972,91 @@ app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, re
   });
 });
 
-app.post("/api/test-connection", requireOwner, async (req: Request, res: Response) => {
-  const targetUrl = (req.body.supabase_url || process.env.SUPABASE_URL || "https://frmgpbwbmarkatjroflr.supabase.co").replace(/\/+$/, "");
-  const targetKey = req.body.supabase_key || process.env.SUPABASE_KEY || "sb_secret_lESPIyr1EUoMeckMYNPhBQ_wOBAaMya";
+app.post("/api/test-connection", requireOwner, async (_req: Request, res: Response) => {
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key) {
+    return res.status(503).json({ status: "error", message: "Server database configuration unavailable." });
+  }
+
   try {
-    const check = await fetch(`${targetUrl}/rest/v1/suppliers?select=name,trn&limit=1`, {
+    const check = await fetch(`${url}/rest/v1/suppliers?select=name,trn&limit=1`, {
       headers: {
-        apikey: targetKey,
-        Authorization: `Bearer ${targetKey}`
-      }
+        apikey: key,
+        Authorization: `Bearer ${key}`
+      },
+      signal: AbortSignal.timeout(10000)
     });
+
     if (!check.ok) {
       const errText = await check.text();
-      return res.json({ status: "error", message: `Supabase returned HTTP ${check.status}: ${errText}` });
+      return res.status(check.status).json({ status: "error", message: `Supabase returned HTTP ${check.status}: ${errText}` });
     }
-    const data = await check.json();
+
+    const data = await check.json().catch(() => []);
     return res.json({
       status: "success",
-      message: `Connection verified successfully! Queried 'suppliers' table (${Array.isArray(data) ? data.length : 1} row checked).`
+      message: `Connection verified successfully. Supplier query returned ${Array.isArray(data) ? data.length : 0} row(s).`
     });
-  } catch (err: any) {
-    return res.json({ status: "error", message: err.message || "Network error connecting to Supabase" });
+  } catch (err) {
+    console.error("[DB-CONNECTION] Test failed:", err);
+    return res.status(503).json({ status: "error", message: "Database connection failed." });
   }
 });
 
 // 1. Health & Connection Status
-app.get("/api/health", (req: Request, res: Response) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
-});
+let supabaseConnected = false;
+let supabaseLastCheckedAt = 0;
 
-app.get("/api/status", async (req: Request, res: Response) => {
+async function verifySupabaseConnection(): Promise<boolean> {
+  if (!isSupabaseConfigured()) {
+    supabaseConnected = false;
+    supabaseLastCheckedAt = Date.now();
+    return false;
+  }
+
   const { url, key } = getSupabaseConfig();
   try {
-    const check = await fetch(`${url}/rest/v1/suppliers?select=id&limit=1`, {
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`
-      }
+    const response = await fetch(`${url}/rest/v1/suppliers?select=id&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10000)
     });
-    res.json({
-      status: "ok",
-      supabase_connected: check.ok,
-      url: url.replace(/https?:\/\//, "").split(".")[0] + ".supabase.co"
-    });
-  } catch (err: any) {
-    res.json({
-      status: "ok",
-      supabase_connected: false,
-      error: err.message
-    });
+    supabaseConnected = response.ok;
+    supabaseLastCheckedAt = Date.now();
+    return supabaseConnected;
+  } catch (err) {
+    supabaseConnected = false;
+    supabaseLastCheckedAt = Date.now();
+    console.warn("[SUPABASE] Connectivity check failed:", err instanceof Error ? err.message : String(err));
+    return false;
   }
+}
+
+app.get("/api/health", (_req: Request, res: Response) => {
+  return res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// 2. Suppliers Endpoints (Both Owner & Clerk can read and create)
+app.get("/_health", async (_req: Request, res: Response) => {
+  const connected = await verifySupabaseConnection();
+  return res.status(connected ? 200 : 503).json({
+    status: connected ? "healthy" : "degraded",
+    supabase_connected: connected,
+    checked_at: new Date(supabaseLastCheckedAt).toISOString()
+  });
+});
+
+app.get("/api/status", async (_req: Request, res: Response) => {
+  const connected = await verifySupabaseConnection();
+  return res.status(connected ? 200 : 503).json({
+    status: connected ? "ok" : "degraded",
+    supabase_connected: connected,
+    url: SUPABASE_URL ? SUPABASE_URL.replace(/^https?:\/\//, "").replace(/\/$/, "") : null
+  });
+});
+
+void verifySupabaseConnection();
+setInterval(() => { void verifySupabaseConnection(); }, 5 * 60 * 1000);
+
+// 2. Suppliers Endpoints// 2. Suppliers Endpoints (Both Owner & Clerk can read and create)
 app.get("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
   const cfg = readConfigJson();
