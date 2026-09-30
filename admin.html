@@ -5688,7 +5688,7 @@
       usersList.forEach((u, idx) => {
         const seq = idx + 1;
         const username = escapeHtml(u.username || u.email || "Unknown");
-        const role = escapeHtml(u.role || "User");
+        const role = escapeHtml(u.role || "Clerk");
         const createdAt = u.created_at ? String(u.created_at).split("T")[0] : "—";
 
         const isSelf = String(u.username || u.email || "").toLowerCase().trim() === currentUser;
@@ -5765,7 +5765,7 @@
         const trn = btn.getAttribute("data-trn") || "";
         const email = btn.getAttribute("data-email") || "";
         const username = btn.getAttribute("data-username") || "";
-        const role = btn.getAttribute("data-role") || "User";
+        const role = btn.getAttribute("data-role") || "Clerk";
 
         if (action === "edit-tx") {
           openEditTxModalById(id, inv);
@@ -5924,7 +5924,7 @@
 
       const username = (usernameInput ? usernameInput.value : "").trim();
       const password = passwordInput ? passwordInput.value : "";
-      const role = roleSelect ? roleSelect.value : "User";
+      const role = roleSelect ? roleSelect.value : "Clerk";
 
       if (!username || !password) {
         if (alertBox) {
