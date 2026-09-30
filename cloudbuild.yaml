@@ -9,22 +9,22 @@ steps:
     args:
       - build
       - -t
-      - $${_REGION}-docker.pkg.dev/$PROJECT_ID/$${_REPOSITORY}/$${_IMAGE}:$SHORT_SHA
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:$SHORT_SHA
       - .
 
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - $${_REGION}-docker.pkg.dev/$PROJECT_ID/$${_REPOSITORY}/$${_IMAGE}:$SHORT_SHA
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:$SHORT_SHA
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
     args:
       - run
       - deploy
-      - $${_SERVICE}
-      - --image=$${_REGION}-docker.pkg.dev/$PROJECT_ID/$${_REPOSITORY}/$${_IMAGE}:$SHORT_SHA
-      - --region=$${_REGION}
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:$SHORT_SHA
+      - --region=${_REGION}
       - --project=$PROJECT_ID
       - --port=3000
       - --memory=512Mi
@@ -32,11 +32,11 @@ steps:
       - --min-instances=1
       - --max-instances=10
       - --set-env-vars=NODE_ENV=production,SUPABASE_URL=https://frmgpbwbmarkatjroflr.supabase.co
-      - --update-secrets=AUTH_SECRET_KEY=tax-accounting-auth-secret:1,SUPABASE_KEY=tax-accounting-supabase-key:1,GEMINI_API_KEY=tax-accounting-gemini-key:1
+      - --set-secrets=AUTH_SECRET_KEY=tax-accounting-auth-secret:1,SUPABASE_KEY=tax-accounting-supabase-key:1,GEMINI_API_KEY=tax-accounting-gemini-key:1
       - --allow-unauthenticated
 
 images:
-  - $${_REGION}-docker.pkg.dev/$PROJECT_ID/$${_REPOSITORY}/$${_IMAGE}:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:$SHORT_SHA
 
 options:
   logging: CLOUD_LOGGING_ONLY
