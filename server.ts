@@ -617,70 +617,131 @@ app.delete("/api/users/:identifier", requireOwner, async (req: Request, res: Res
 });
 
 // 0.1 Settings// 0.1 Settings & Dynamic Supabase Configuration (Owner Only)
-app.get("/api/settings", requireOwner, (_req: Request, res: Response) => {
-  const cfg = readConfigJson();
-  return res.json({
-    success: true,
-    database: {
-      configured: true,
-      host: new URL(SUPABASE_URL).hostname
-    },
-    default_vat_rate: Number(cfg.default_vat_rate ?? 5.0)
-  });
+app.get("/api/settings", requireOwner, async (_req: Request, res: Response) => {
+  const { url, key } = getSupabaseConfig();
+  try {
+    const response = await fetch(`${url}/rest/v1/settings?id=eq.application_config&select=value&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` }
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(502).json({ success: false, error: errText || "Unable to load application settings." });
+    }
+    const rows = await response.json().catch(() => []);
+    const value = Array.isArray(rows) && rows.length > 0 && rows[0].value && typeof rows[0].value === "object"
+      ? rows[0].value
+      : {};
+    return res.json({
+      success: true,
+      database: { configured: true, host: new URL(SUPABASE_URL).hostname },
+      default_vat_rate: Number(value.default_vat_rate ?? 5.0)
+    });
+  } catch {
+    return res.status(503).json({ success: false, error: "Application settings are temporarily unavailable." });
+  }
 });
 
-app.post("/api/settings", requireOwner, (req: Request, res: Response) => {
+app.post("/api/settings", requireOwner, async (req: Request, res: Response) => {
   const vatRate = Number(req.body?.default_vat_rate);
   if (!Number.isFinite(vatRate) || vatRate < 0 || vatRate > 100) {
     return res.status(400).json({ success: false, error: "default_vat_rate must be a number between 0 and 100." });
   }
-  writeConfigJson({ ...readConfigJson(), default_vat_rate: Math.round(vatRate * 100) / 100 });
-  return res.json({
-    success: true,
-    message: "Application settings saved successfully.",
-    default_vat_rate: Math.round(vatRate * 100) / 100
-  });
+
+  const { url, key } = getSupabaseConfig();
+  const value = { default_vat_rate: Math.round(vatRate * 100) / 100 };
+
+  try {
+    const response = await fetch(`${url}/rest/v1/settings`, {
+      method: "POST",
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=representation"
+      },
+      body: JSON.stringify({
+        id: "application_config",
+        value,
+        updated_at: new Date().toISOString()
+      })
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Application settings save was rejected by the database." });
+    }
+    return res.json({ success: true, message: "Application settings saved successfully.", default_vat_rate: value.default_vat_rate });
+  } catch {
+    return res.status(503).json({ success: false, error: "Application settings are temporarily unavailable." });
+  }
 });
 
-app.get("/api/settings/recipients", requireAuth, async (req: Request, res: Response) => {
+app.get("/api/settings/recipients"app.get("/api/settings/recipients", requireAuth, async (_req: Request, res: Response) => {
   try {
     const { url, key } = getSupabaseConfig();
+    const response = await fetch(`${url}/rest/v1/settings?id=eq.report_recipients&select=value&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` }
+    });
+    if (!response.ok) {
+      return res.status(response.status).json({ success: false, error: "Unable to load report recipients." });
+    }
+    const rows = await response.json().catch(() => []);
+    const raw = Array.isArray(rows) && rows.length > 0 ? rows[0].value : [];
     let recipients: string[] = [];
-    if (url && key) {
-      try {
-        const resp = await fetch(`${url.replace(/\/+$/, "")}/rest/v1/settings?id=eq.report_recipients&select=value`, {
-          headers: { apikey: key, Authorization: `Bearer ${key}` }
-        });
-        if (resp.ok) {
-          const rows = await resp.json();
-          if (Array.isArray(rows) && rows.length > 0 && rows[0].value) {
-            recipients = typeof rows[0].value === "string" ? JSON.parse(rows[0].value) : rows[0].value;
-          }
-        }
-      } catch (e) {
-        console.warn("[WARN] Could not query Supabase settings table:", e);
-      }
-    }
-    if (!recipients || recipients.length === 0) {
-      const cfg = readConfigJson();
-      recipients = cfg.report_recipients || [];
-    }
-    return res.json({ success: true, recipients });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    if (Array.isArray(raw)) recipients = raw.map((x: unknown) => String(x).trim().toLowerCase()).filter(Boolean);
+    return res.json({ success: true, recipients: Array.from(new Set(recipients)) });
+  } catch {
+    return res.status(503).json({ success: false, error: "Report recipient settings are temporarily unavailable." });
   }
 });
 
 app.post("/api/settings/recipients", requireOwner, async (req: Request, res: Response) => {
+  const rawList = req.body?.recipients;
+  let list: string[] = [];
+
+  if (Array.isArray(rawList)) {
+    list = rawList.map((x: unknown) => String(x).trim().toLowerCase()).filter(Boolean);
+  } else if (typeof rawList === "string") {
+    list = rawList.split(/[\n,;]+/).map((s: string) => s.trim().toLowerCase()).filter(Boolean);
+  }
+
+  list = Array.from(new Set(list));
+  const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  list = list.filter(email => validEmail.test(email));
+
+  if (list.length > 50) {
+    return res.status(400).json({ success: false, error: "A maximum of 50 report recipients is allowed." });
+  }
+
+  const { url, key } = getSupabaseConfig();
+
   try {
-    const rawList = req.body.recipients;
-    let list: string[] = [];
-    if (Array.isArray(rawList)) {
-      list = rawList.map((x: any) => String(x).trim().toLowerCase()).filter(Boolean);
-    } else if (typeof rawList === "string") {
-      list = rawList.split(/[\n,;]+/).map((s: string) => s.trim().toLowerCase()).filter(Boolean);
+    const response = await fetch(`${url}/rest/v1/settings`, {
+      method: "POST",
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=representation"
+      },
+      body: JSON.stringify({
+        id: "report_recipients",
+        value: list,
+        updated_at: new Date().toISOString()
+      })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Report recipient settings were rejected by the database." });
     }
-    // Deduplicate
+
+    return res.json({ success: true, recipients: list });
+  } catch {
+    return res.status(503).json({ success: false, error: "Report recipient settings are temporarily unavailable." });
+  }
+});
+
+// Deduplicate
     list = Array.from(new Set(list));
 
     // Update local config.json
