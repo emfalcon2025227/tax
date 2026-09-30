@@ -616,7 +616,7 @@ app.delete("/api/users/:identifier", requireOwner, async (req: Request, res: Res
   }
 });
 
-// 0.1 Settings// 0.1 Settings & Dynamic Supabase Configuration (Owner Only)
+// 0.1 Settings
 app.get("/api/settings", requireOwner, async (_req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
   try {
@@ -1439,7 +1439,7 @@ app.put(["/api/transactions/:id", "/api/transactions"], requireOwner, async (req
   }
 });
 
-// 3.2 Delete Transaction// 3.2 Delete Transaction (DELETE /api/transactions/:id or /api/transactions - Owner Only)
+// 3.2 Delete Transaction (DELETE /api/transactions/:id or /api/transactions - Owner Only)
 app.delete(["/api/transactions/:id", "/api/transactions"], requireOwner, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
   const rawId = String(req.params.id || req.body?.id || req.query?.id || "").trim();
