@@ -966,54 +966,46 @@ app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, re
 });
 
 // 2. Suppliers Endpoints// 2. Suppliers Endpoints// 2. Suppliers Endpoints// 2. Suppliers Endpoints (Both Owner & Clerk can read and create)
-app.get("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
+app.get("/api/suppliers", requireAuth, async (_req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const cfg = readConfigJson();
-  const deletedSuppliers: string[] = Array.isArray(cfg.deleted_suppliers) 
-    ? cfg.deleted_suppliers.map((x: any) => String(x).trim()) 
-    : [];
+  if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
 
   try {
-    const response = await fetch(`${url}/rest/v1/suppliers?select=*&order=name.asc`, {
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`
+    const response = await fetch(
+      `${url}/rest/v1/suppliers?select=id,name,trn,created_at&order=name.asc`,
+      {
+        headers: { apikey: key, Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(10000)
       }
-    });
+    );
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ error: errText });
+      const errorText = await response.text();
+      return res.status(response.status).json({ success: false, error: errorText || "Failed to load suppliers." });
     }
     const data = await response.json();
-    const filtered = Array.isArray(data)
-      ? data.filter((s: any) => 
-          !deletedSuppliers.includes(String(s.trn || "").trim()) &&
-          !deletedSuppliers.includes(String(s.name || "").trim()) &&
-          !deletedSuppliers.includes(String(s.id || "").trim())
-        )
-      : data;
-    res.json(filtered);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    return res.json(Array.isArray(data) ? data : []);
+  } catch (err) {
+    console.error("[SUPPLIERS] Read failed:", err);
+    return res.status(503).json({ success: false, error: "Database unavailable." });
   }
 });
 
 app.post("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const rawBody = req.body;
-  const items = Array.isArray(rawBody) ? rawBody : [rawBody];
+  const items = Array.isArray(req.body) ? req.body : [req.body];
+  if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
+  if (items.length === 0 || items.length > 100) {
+    return res.status(400).json({ success: false, error: "Supplier batch must contain between 1 and 100 items." });
+  }
 
-  // Clean suppliers: ensure format as text
-  const cleanedSuppliers = items.map((item: any) => {
-    let trnRaw = String(item.trn || "").trim();
-    let trnDigits = trnRaw.replace(/\D/g, "");
-    if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-    if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
-    return {
-      name: String(item.name || "UNKNOWN_SUPPLIER").trim(),
-      trn: trnDigits || trnRaw
-    };
-  });
+  const cleaned: Array<{ name: string; trn: string }> = [];
+  for (const item of items) {
+    const name = String(item?.name || "").trim();
+    const trn = String(item?.trn || "").replace(/\D/g, "");
+    if (!name) return res.status(400).json({ success: false, error: "Supplier name is required." });
+    if (!/^\d{15}$/.test(trn)) return res.status(400).json({ success: false, error: "Supplier TRN must contain exactly 15 digits." });
+    cleaned.push({ name, trn });
+  }
 
   try {
     const response = await fetch(`${url}/rest/v1/suppliers`, {
@@ -1022,39 +1014,41 @@ app.post("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
         apikey: key,
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
-        Prefer: "return=representation,resolution=merge-duplicates"
+        Prefer: "return=representation"
       },
-      body: JSON.stringify(cleanedSuppliers)
+      body: JSON.stringify(cleaned),
+      signal: AbortSignal.timeout(10000)
     });
-
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ error: errText });
+      const errorText = await response.text();
+      return res.status(response.status).json({ success: false, error: errorText || "Failed to create supplier." });
     }
-    const data = await response.json();
-    res.status(201).json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    const data = await response.json().catch(() => []);
+    return res.status(201).json(data);
+  } catch (err) {
+    console.error("[SUPPLIERS] Insert failed:", err);
+    return res.status(503).json({ success: false, error: "Database unavailable." });
   }
 });
 
-// Update Supplier (PUT /api/suppliers/:identifier or PUT /api/suppliers)
+// Update Supplier (PUT /api/suppliers/:identifier or PUT /api/suppliers)// Update Supplier (PUT /api/suppliers/:identifier or PUT /api/suppliers)
 app.put(["/api/suppliers/:identifier", "/api/suppliers"], requireAuth, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const identifier = String(req.params.identifier || req.body.identifier || req.body.old_trn || req.body.trn || req.body.id || "").trim();
-  const name = String(req.body.name || "").trim();
-  let trnRaw = String(req.body.trn || "").trim();
-  let trnDigits = trnRaw.replace(/\D/g, "");
+  const identifier = String(req.params.identifier || req.body?.identifier || req.body?.old_trn || req.body?.trn || req.body?.id || "").trim();
+  const name = String(req.body?.name || "").trim();
+  const trn = String(req.body?.trn || "").replace(/\D/g, "");
 
-  if (!name) {
-    return res.status(400).json({ success: false, error: "Party / Supplier name is required." });
-  }
-  if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-  if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
-  const finalTrn = trnDigits || trnRaw;
+  if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
+  if (!identifier) return res.status(400).json({ success: false, error: "Supplier identifier is required." });
+  if (!name) return res.status(400).json({ success: false, error: "Supplier name is required." });
+  if (!/^\d{15}$/.test(trn)) return res.status(400).json({ success: false, error: "Supplier TRN must contain exactly 15 digits." });
 
   try {
-    const response = await fetch(`${url}/rest/v1/suppliers?or=(trn.eq.${encodeURIComponent(identifier)},id.eq.${encodeURIComponent(identifier)})`, {
+    const filter = /^\d+$/.test(identifier)
+      ? `or=(id.eq.${encodeURIComponent(identifier)},trn.eq.${encodeURIComponent(identifier)})`
+      : `or=(name.eq.${encodeURIComponent(identifier)},trn.eq.${encodeURIComponent(identifier)})`;
+
+    const response = await fetch(`${url}/rest/v1/suppliers?${filter}`, {
       method: "PATCH",
       headers: {
         apikey: key,
@@ -1062,86 +1056,86 @@ app.put(["/api/suppliers/:identifier", "/api/suppliers"], requireAuth, async (re
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify({ name, trn: finalTrn })
+      body: JSON.stringify({ name, trn }),
+      signal: AbortSignal.timeout(10000)
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(500).json({ success: false, error: errText });
+      const errorText = await response.text();
+      return res.status(response.status).json({ success: false, error: errorText || "Failed to update supplier." });
     }
-    const data = await response.json().catch(() => ([]));
-    return res.json({ success: true, message: `Supplier '${name}' updated successfully.`, supplier: { name, trn: finalTrn }, data });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+
+    const updated = await response.json().catch(() => []);
+    if (!Array.isArray(updated) || updated.length === 0) {
+      return res.status(404).json({ success: false, error: "Supplier not found." });
+    }
+
+    return res.json({ success: true, message: `Supplier '${name}' updated successfully.`, supplier: updated[0] });
+  } catch (err) {
+    console.error("[SUPPLIERS] Update failed:", err);
+    return res.status(503).json({ success: false, error: "Database unavailable." });
   }
 });
 
-// Delete Supplier (DELETE /api/suppliers/:identifier or DELETE /api/suppliers)
 app.delete(["/api/suppliers/:identifier", "/api/suppliers"], requireOwner, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
   const identifier = String(req.params.identifier || req.query.identifier || req.query.trn || req.body?.identifier || req.body?.trn || req.body?.id || "").trim();
 
-  if (!identifier) {
-    return res.status(400).json({ success: false, error: "Missing supplier identifier (TRN or ID)." });
-  }
-
-  const headers = {
-    apikey: key,
-    Authorization: `Bearer ${key}`
-  };
+  if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
+  if (!identifier) return res.status(400).json({ success: false, error: "Supplier identifier is required." });
 
   try {
-    // Foreign Key / Relational Integrity Check
-    const chkResp = await fetch(`${url}/rest/v1/transactions?select=id&or=(trn.eq.${encodeURIComponent(identifier)},party_name.ilike.${encodeURIComponent("%" + identifier + "%")})`, { headers });
-    if (chkResp.ok) {
-      const chkData = await chkResp.json().catch(() => []);
-      if (Array.isArray(chkData) && chkData.length > 0) {
-        return res.status(400).json({
-          success: false,
-          error: "Cannot delete supplier. They have existing invoices in the system."
-        });
+    const txCheckFilter = /^\d+$/.test(identifier)
+      ? `trn.eq.${encodeURIComponent(identifier)}`
+      : `party_name.ilike.${encodeURIComponent(identifier)}`;
+    const txCheck = await fetch(
+      `${url}/rest/v1/transactions?select=id&or=(${txCheckFilter})&limit=1`,
+      {
+        headers: { apikey: key, Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(10000)
       }
+    );
+    if (!txCheck.ok) {
+      console.error("[SUPPLIERS] Related transaction check failed:", await txCheck.text());
+      return res.status(503).json({ success: false, error: "Could not verify supplier dependencies." });
+    }
+    const related = await txCheck.json().catch(() => []);
+    if (Array.isArray(related) && related.length > 0) {
+      return res.status(409).json({ success: false, error: "Cannot delete supplier because existing transactions reference this supplier." });
     }
 
-    let delFilter = "";
-    if (/^\d{15}$/.test(identifier)) {
-      delFilter = `trn=eq.${encodeURIComponent(identifier)}`;
-    } else if (/^\d+$/.test(identifier) && identifier.length < 12) {
-      delFilter = `or=(id.eq.${encodeURIComponent(identifier)},trn.eq.${encodeURIComponent(identifier)})`;
-    } else {
-      delFilter = `or=(name.eq.${encodeURIComponent(identifier)},trn.eq.${encodeURIComponent(identifier)})`;
-    }
+    const filter = /^\d+$/.test(identifier)
+      ? `or=(id.eq.${encodeURIComponent(identifier)},trn.eq.${encodeURIComponent(identifier)})`
+      : `or=(name.eq.${encodeURIComponent(identifier)},trn.eq.${encodeURIComponent(identifier)})`;
 
-    const response = await fetch(`${url}/rest/v1/suppliers?${delFilter}`, {
+    const response = await fetch(`${url}/rest/v1/suppliers?${filter}`, {
       method: "DELETE",
-      headers: { ...headers, Prefer: "return=representation" }
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        Prefer: "return=representation"
+      },
+      signal: AbortSignal.timeout(10000)
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(400).json({ success: false, error: errText || "Failed to delete supplier" });
+      const errorText = await response.text();
+      return res.status(response.status).json({ success: false, error: errorText || "Failed to delete supplier." });
     }
 
-    try {
-      const cfg = readConfigJson();
-      if (!Array.isArray(cfg.deleted_suppliers)) {
-        cfg.deleted_suppliers = [];
-      }
-      if (!cfg.deleted_suppliers.includes(identifier)) {
-        cfg.deleted_suppliers.push(identifier);
-      }
-      writeConfigJson(cfg);
-    } catch (e) {
-      console.warn("Could not save deleted_suppliers to config.json:", e);
+    const deleted = await response.json().catch(() => []);
+    if (!Array.isArray(deleted) || deleted.length === 0) {
+      return res.status(404).json({ success: false, error: "Supplier not found." });
     }
 
-    return res.json({ success: true, message: `Supplier '${identifier}' deleted successfully.` });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.json({ success: true, message: `Supplier '${identifier}' deleted successfully.`, deleted });
+  } catch (err) {
+    console.error("[SUPPLIERS] Delete failed:", err);
+    return res.status(503).json({ success: false, error: "Database unavailable." });
   }
 });
 
-// Helper to fetch all transactions from Supabase bypassing the PostgREST 1,000 max-rows limit via Range pagination
+// Helper to fetch all transactions// Helper to fetch all transactions from Supabase bypassing the PostgREST 1,000 max-rows limit via Range pagination
 async function fetchAllSupabaseTransactions(
   url: string,
   key: string,
