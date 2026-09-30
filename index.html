@@ -133,16 +133,15 @@
           <span id="sync-pending-label">Sync Pending (0)</span>
         </button>
 
-        <!-- Supabase Status Badge -->
-        <button 
-          type="button" 
-          data-onclick="openConfigModal()" 
+        <!-- Supabase Status Badge: server-managed, not user-configurable -->
+        <div 
           id="status-badge"
-          class="flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-800 text-slate-300 border border-slate-700 active:scale-95 transition-transform"
+          class="flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-800 text-slate-300 border border-slate-700"
+          aria-live="polite"
         >
           <span id="status-dot" class="w-2 h-2 rounded-full bg-amber-400"></span>
           <span id="status-text">Connecting...</span>
-        </button>
+        </div>
       </div>
     </div>
     
@@ -671,37 +670,6 @@
     </footer>
 
   </main>
-
-  <!-- SUPABASE CONFIGURATION MODAL -->
-  <div id="config-modal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-4">
-    <div class="bg-white w-full max-w-md rounded-2xl p-5 space-y-4 shadow-xl">
-      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
-        <h3 class="text-sm font-bold text-slate-900">Supabase Connection Settings</h3>
-        <button type="button" data-onclick="closeConfigModal()" class="text-slate-400 hover:text-slate-700 font-bold p-1">✕</button>
-      </div>
-      
-      <p class="text-xs text-slate-600">
-        All database operations route securely through the Cloud Run Express backend proxy. Supabase service credentials remain protected on the server.
-      </p>
-
-      <div class="space-y-3 text-xs">
-        <div class="p-3 bg-slate-50 rounded-lg border border-slate-200">
-          <div class="flex items-center justify-between mb-1">
-            <span class="font-bold text-slate-700">Connection Mode</span>
-            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">Secure Server Proxy</span>
-          </div>
-          <p class="text-[11px] text-slate-500">Database requests are authorized via Bearer JWT and proxied securely through /api/* endpoints without exposing Supabase secrets to the browser.</p>
-        </div>
-      </div>
-
-      <div class="pt-2 flex justify-between items-center">
-        <button type="button" data-onclick="clearOfflineQueue()" class="text-xs text-rose-600 hover:underline">Clear Offline Queue</button>
-        <div class="flex space-x-2">
-          <button type="button" data-onclick="closeConfigModal()" class="px-3 py-2 text-xs font-bold bg-slate-900 text-white rounded-lg">Close</button>
-        </div>
-      </div>
-    </div>
-  </div>
 
   <!-- ADD NEW SUPPLIER MODAL (STRICT 15-DIGIT TRN VALIDATION) -->
   <div id="add-supplier-modal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -2445,20 +2413,6 @@
       // Do not simulate or fabricate supplier state while the server reports a database outage.
     }
 
-    function openConfigModal() {
-      document.getElementById("config-modal").classList.remove("hidden");
-    }
-
-    function closeConfigModal() {
-      document.getElementById("config-modal").classList.add("hidden");
-    }
-
-    function saveConfig() {
-      localStorage.removeItem("APP_SUPABASE_KEY");
-      localStorage.removeItem("APP_SUPABASE_URL");
-      closeConfigModal();
-      initSupabaseClient();
-    }
   </script>
 
   <!-- iOS / iPhone PWA Install Banner Modal -->
