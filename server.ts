@@ -1415,99 +1415,135 @@ app.get("/api/transactions", requireOwner, async (req: Request, res: Response) =
   }
 });
 
-// Insert Transactions: Both Owner and Clerk can insert transactions with duplicate protection
-app.post("/api/transactions", requireAuth, async (req: Request, res: Response) => {
-  const { url, key } = getSupabaseConfig();
-  const rawBody = req.body;
-  const items = Array.isArray(rawBody) ? rawBody : [rawBody];
+// Insert Transactions: Both Owner and Clerk can insert transactions with authoritative server-side VAT calculation
+function calculateAuthoritativeTransaction(item: any) {
+  const transactionType = normalizeTransactionType(item?.transaction_type);
+  const modeRaw = String(item?.tax_mode || "inclusive").trim().toLowerCase();
+  if (!["inclusive", "exclusive", "exempt"].includes(modeRaw)) {
+    throw new Error("Invalid tax mode. Expected inclusive, exclusive, or exempt.");
+  }
+  const taxMode = modeRaw as "inclusive" | "exclusive" | "exempt";
 
-  if (items.length === 0) {
-    return res.status(400).json({ error: "Empty transaction list" });
+  const transactionDate = String(item?.transaction_date || "").split("T")[0];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(transactionDate)) {
+    throw new Error("Transaction date must be in YYYY-MM-DD format.");
   }
 
-  // Sanitize transaction payloads for Supabase schema
-  const cleanedItems = items.map((item: any) => {
-    let trnRaw = String(item.trn || "").trim();
-    let trnDigits = trnRaw.replace(/\D/g, "");
-    if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-    if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
+  const invoiceNo = item?.invoice_no == null ? "" : String(item.invoice_no).trim();
 
-    // Check for tax-exempt status or zero VAT
-    const isExempt = item.tax_mode === "exempt" || item.is_exempt === true || (item.vat_amount !== undefined && item.vat_amount !== null && Number(item.vat_amount) === 0);
+  let partyName = String(item?.party_name || "").trim();
+  let trn = String(item?.trn || "").replace(/\D/g, "");
 
-    let amountWithTax = Number(item.amount_with_tax || item.total_amount || 0);
-    let amountBeforeTax = Number(item.amount_before_tax || 0);
-    let vatAmount = Number(item.vat_amount || 0);
-    let vatRate = 0.05;
-    let taxMode = item.tax_mode || "exclusive";
+  if (transactionType === "sales") {
+    partyName = "Cash Customer";
+    trn = "000000000000000";
+  } else {
+    if (!partyName) throw new Error("Supplier / vendor name is required for purchases.");
+    if (!/^\d{15}$/.test(trn)) throw new Error("Supplier TRN must contain exactly 15 digits.");
+  }
 
-    if (isExempt) {
-      vatAmount = 0;
-      vatRate = 0;
-      taxMode = "exempt";
-      if (amountBeforeTax > 0) {
-        amountWithTax = amountWithTax > 0 ? amountWithTax : amountBeforeTax;
-      } else if (amountWithTax > 0) {
-        amountBeforeTax = amountWithTax;
-      }
-    } else {
-      if (amountWithTax > 0 && amountBeforeTax === 0) {
-        amountBeforeTax = Math.round((amountWithTax / 1.05) * 100) / 100;
-        vatAmount = Math.round((amountWithTax - amountBeforeTax) * 100) / 100;
-      } else if (amountBeforeTax > 0 && amountWithTax === 0) {
-        vatAmount = Math.round((amountBeforeTax * 0.05) * 100) / 100;
-        amountWithTax = Math.round((amountBeforeTax + vatAmount) * 100) / 100;
-      }
-    }
+  let inputAmount = Number(item?.amount_input);
+  if (!Number.isFinite(inputAmount) || inputAmount <= 0) {
+    inputAmount = taxMode === "inclusive" ? Number(item?.amount_with_tax) : Number(item?.amount_before_tax);
+  }
+  if (!Number.isFinite(inputAmount) || inputAmount <= 0) {
+    throw new Error("Amount must be greater than zero.");
+  }
 
-    let txDate = String(item.transaction_date || "").split("T")[0];
-    if (!txDate || !/^\d{4}-\d{2}-\d{2}$/.test(txDate)) {
-      txDate = getUAECurrentDate();
-    }
+  let amountBeforeTax: number;
+  let vatAmount: number;
+  let amountWithTax: number;
+  let vatRate: number;
 
-    const partyNameRaw = String(item.party_name || "").trim();
-    const partyNameLower = partyNameRaw.toLowerCase();
-    const rawTypeLower = String(item.transaction_type || "").trim().toLowerCase();
-    const invNoLower = String(item.invoice_no || "").trim().toLowerCase();
+  if (taxMode === "inclusive") {
+    amountBeforeTax = Math.round((inputAmount / 1.05) * 100) / 100;
+    vatAmount = Math.round((inputAmount - amountBeforeTax) * 100) / 100;
+    amountWithTax = Math.round(inputAmount * 100) / 100;
+    vatRate = 0.05;
+  } else if (taxMode === "exclusive") {
+    amountBeforeTax = Math.round(inputAmount * 100) / 100;
+    vatAmount = Math.round(inputAmount * 0.05 * 100) / 100;
+    amountWithTax = Math.round((amountBeforeTax + vatAmount) * 100) / 100;
+    vatRate = 0.05;
+  } else {
+    amountBeforeTax = Math.round(inputAmount * 100) / 100;
+    vatAmount = 0;
+    amountWithTax = amountBeforeTax;
+    vatRate = 0;
+  }
 
-    let txType = normalizeTransactionType(item.transaction_type);
+  return {
+    transaction_type: transactionType,
+    transaction_date: transactionDate,
+    invoice_no: invoiceNo,
+    party_name: partyName,
+    trn,
+    amount_before_tax: amountBeforeTax,
+    vat_rate: vatRate,
+    vat_amount: vatAmount,
+    amount_with_tax: amountWithTax,
+    tax_mode: taxMode
+  };
+}
 
-    const invNo = item.invoice_no !== undefined && item.invoice_no !== null ? String(item.invoice_no).trim() : "";
+app.post("/api/transactions", requireAuth, async (req: Request, res: Response) => {
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
 
-    return {
-      transaction_type: txType,
-      transaction_date: txDate,
-      invoice_no: invNo,
-      party_name: String(item.party_name || "UNKNOWN_PARTY").trim(),
-      trn: trnDigits || trnRaw || "000000000000000",
-      amount_before_tax: amountBeforeTax,
-      vat_rate: vatRate,
-      vat_amount: vatAmount,
-      amount_with_tax: amountWithTax,
-      tax_mode: taxMode
-    };
-  });
+  const rawBody = req.body;
+  const items = Array.isArray(rawBody) ? rawBody : [rawBody];
+  if (items.length === 0 || items.length > 100) {
+    return res.status(400).json({ success: false, error: "Transaction batch must contain between 1 and 100 items." });
+  }
 
-  // Guard against duplicate insertions (both existing DB rows and duplicates inside request batch)
-  let itemsToInsert = cleanedItems;
+  let cleanedItems: any[];
   try {
-    const existingList = await fetchAllSupabaseTransactions(url, key, "created_at.asc", "*");
-    const seenFingerprints = new Set(existingList.map(ex => getTransactionStrictFingerprint(ex)));
-    itemsToInsert = [];
-    for (const it of cleanedItems) {
-      const fp = getTransactionStrictFingerprint(it);
-      if (!seenFingerprints.has(fp)) {
-        seenFingerprints.add(fp);
-        itemsToInsert.push(it);
+    cleanedItems = items.map(calculateAuthoritativeTransaction);
+  } catch (err: any) {
+    return res.status(400).json({ success: false, error: err.message || "Invalid transaction payload." });
+  }
+
+  // Targeted duplicate validation. Avoid fetching the entire historical ledger for normal entry.
+  const itemsToInsert: any[] = [];
+  for (const item of cleanedItems) {
+    const params = new URLSearchParams({
+      select: "id",
+      transaction_type: `eq.${item.transaction_type}`,
+      transaction_date: `eq.${item.transaction_date}`,
+      invoice_no: `eq.${item.invoice_no}`,
+      party_name: `eq.${item.party_name}`,
+      trn: `eq.${item.trn}`,
+      amount_before_tax: `eq.${item.amount_before_tax}`,
+      vat_rate: `eq.${item.vat_rate}`,
+      vat_amount: `eq.${item.vat_amount}`,
+      amount_with_tax: `eq.${item.amount_with_tax}`,
+      limit: "1"
+    });
+
+    try {
+      const dupRes = await fetch(`${url}/rest/v1/transactions?${params.toString()}`, {
+        headers: { apikey: key, Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(10000)
+      });
+      if (!dupRes.ok) {
+        console.error("[TRANSACTIONS] Duplicate validation failed:", await dupRes.text());
+        return res.status(503).json({ success: false, error: "Database unavailable during duplicate validation." });
       }
+      const dupRows = await dupRes.json().catch(() => []);
+      if (!Array.isArray(dupRows) || dupRows.length === 0) itemsToInsert.push(item);
+    } catch (err) {
+      console.error("[TRANSACTIONS] Duplicate validation exception:", err);
+      return res.status(503).json({ success: false, error: "Database unavailable during duplicate validation." });
     }
-  } catch (dupCheckErr) {
-    console.warn("Direct insert duplicate pre-check skipped:", dupCheckErr);
   }
 
   if (itemsToInsert.length === 0) {
-    // If all submitted items were already in database, return success with existing records representation
-    return res.status(200).json({ message: "Duplicate records detected and skipped", inserted: 0, items: [] });
+    return res.status(200).json({
+      success: true,
+      inserted: 0,
+      skipped_duplicates: cleanedItems.length,
+      items: []
+    });
   }
 
   try {
@@ -1519,96 +1555,41 @@ app.post("/api/transactions", requireAuth, async (req: Request, res: Response) =
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify(itemsToInsert)
+      body: JSON.stringify(itemsToInsert),
+      signal: AbortSignal.timeout(15000)
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      console.error("[SERVER] Supabase insert error:", errText);
-      return res.status(response.status).json({ error: errText });
+      const errorText = await response.text();
+      console.error("[SERVER] Supabase transaction insert error:", errorText);
+      return res.status(response.status).json({ success: false, error: errorText || "Transaction insert rejected." });
     }
 
     const data = await response.json();
-    res.status(201).json(data);
-  } catch (err: any) {
+    return res.status(201).json(data);
+  } catch (err) {
     console.error("[SERVER] Transaction insert exception:", err);
-    res.status(500).json({ error: err.message });
+    return res.status(503).json({ success: false, error: "Database unavailable." });
   }
 });
 
 // 3.1 Update Transaction (PUT /api/transactions/:id or /api/transactions - Owner Only)
 app.put(["/api/transactions/:id", "/api/transactions"], requireOwner, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const txId = req.params.id || req.body.id;
+  const txId = req.params.id || req.body?.id;
 
-  if (!txId) {
-    return res.status(400).json({ success: false, error: "Transaction ID is required for update" });
+  if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
+  if (!txId) return res.status(400).json({ success: false, error: "Transaction ID is required for update" });
+
+  let payload;
+  try {
+    payload = calculateAuthoritativeTransaction(req.body);
+  } catch (err: any) {
+    return res.status(400).json({ success: false, error: err.message || "Invalid transaction payload." });
   }
 
   try {
-    let trnRaw = String(req.body.trn || "").trim();
-    let trnDigits = trnRaw.replace(/\D/g, "");
-    if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-    if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
-
-    // Check if record is marked as tax-exempt or has zero VAT
-    const isExempt = req.body.tax_mode === "exempt" || req.body.is_exempt === true || (req.body.vat_amount !== undefined && req.body.vat_amount !== null && Number(req.body.vat_amount) === 0);
-
-    let amountWithTax = Number(req.body.amount_with_tax ?? 0);
-    let amountBeforeTax = Number(req.body.amount_before_tax ?? 0);
-    let vatAmount = 0;
-    let vatRate = 0.05;
-    let taxMode = req.body.tax_mode || "inclusive";
-
-    if (isExempt) {
-      vatAmount = 0;
-      vatRate = 0;
-      taxMode = "exempt";
-      if (amountBeforeTax > 0) {
-        amountWithTax = amountWithTax > 0 ? amountWithTax : amountBeforeTax;
-      } else if (amountWithTax > 0) {
-        amountBeforeTax = amountWithTax;
-      }
-    } else {
-      if (amountWithTax > 0 && amountBeforeTax === 0) {
-        amountBeforeTax = Math.round((amountWithTax / 1.05) * 100) / 100;
-        vatAmount = Math.round((amountWithTax - amountBeforeTax) * 100) / 100;
-      } else if (amountBeforeTax > 0 && amountWithTax === 0) {
-        vatAmount = Math.round((amountBeforeTax * 0.05) * 100) / 100;
-        amountWithTax = Math.round((amountBeforeTax + vatAmount) * 100) / 100;
-      } else if (req.body.vat_amount !== undefined && Number(req.body.vat_amount) > 0) {
-        vatAmount = Number(req.body.vat_amount);
-      } else if (amountWithTax > 0 && amountBeforeTax > 0) {
-        vatAmount = Math.round((amountWithTax - amountBeforeTax) * 100) / 100;
-      }
-    }
-
-    let txDate = String(req.body.transaction_date || "").split("T")[0];
-    if (!txDate || !/^\d{4}-\d{2}-\d{2}$/.test(txDate)) {
-      txDate = getUAECurrentDate();
-    }
-
-    let txType = String(req.body.transaction_type || "purchases").toLowerCase().trim();
-    if (txType !== "sales" && txType !== "purchases") {
-      txType = "purchases";
-    }
-
-    const invNo = req.body.invoice_no !== undefined && req.body.invoice_no !== null ? String(req.body.invoice_no).trim() : "";
-
-    const payload = {
-      transaction_type: txType,
-      transaction_date: txDate,
-      invoice_no: invNo,
-      party_name: String(req.body.party_name || "UNKNOWN_PARTY").trim(),
-      trn: trnDigits || trnRaw,
-      amount_before_tax: amountBeforeTax,
-      vat_rate: vatRate,
-      vat_amount: vatAmount,
-      amount_with_tax: amountWithTax,
-      tax_mode: taxMode
-    };
-
-    const response = await fetch(`${url}/rest/v1/transactions?id=eq.${txId}`, {
+    const response = await fetch(`${url}/rest/v1/transactions?id=eq.${encodeURIComponent(String(txId))}`, {
       method: "PATCH",
       headers: {
         apikey: key,
@@ -1616,19 +1597,24 @@ app.put(["/api/transactions/:id", "/api/transactions"], requireOwner, async (req
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10000)
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ success: false, error: errText });
+      const errorText = await response.text();
+      return res.status(response.status).json({ success: false, error: errorText || "Failed to update transaction." });
     }
 
-    const data = await response.json();
-    res.json({ success: true, data: Array.isArray(data) ? data[0] : data, recalculated: payload });
-  } catch (err: any) {
+    const data = await response.json().catch(() => []);
+    if (!Array.isArray(data) || data.length === 0) {
+      return res.status(404).json({ success: false, error: "Transaction not found." });
+    }
+
+    return res.json({ success: true, data: data[0], recalculated: payload });
+  } catch (err) {
     console.error("[SERVER] Update transaction exception:", err);
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(503).json({ success: false, error: "Database unavailable." });
   }
 });
 
@@ -1638,76 +1624,42 @@ app.delete(["/api/transactions/:id", "/api/transactions"], requireOwner, async (
   const txId = req.params.id || req.body?.id || req.query?.id;
   const invoiceNo = req.body?.invoice_no || req.query?.invoice_no;
 
-  if (!txId && !invoiceNo) {
-    return res.status(400).json({ success: false, error: "Transaction ID or Invoice Number is required for delete" });
-  }
+  if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
+  if (!txId && !invoiceNo) return res.status(400).json({ success: false, error: "Transaction ID or Invoice Number is required for delete" });
+
+  const query = txId
+    ? `id=eq.${encodeURIComponent(String(txId))}`
+    : `invoice_no=eq.${encodeURIComponent(String(invoiceNo))}`;
 
   try {
-    let deletedRows: any[] = [];
-    let lastError = "";
+    const response = await fetch(`${url}/rest/v1/transactions?${query}`, {
+      method: "DELETE",
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        Prefer: "return=representation"
+      },
+      signal: AbortSignal.timeout(10000)
+    });
 
-    // 1. If txId is provided, try delete by 'id'
-    if (txId && txId !== "undefined" && txId !== "null") {
-      try {
-        const resp = await fetch(`${url}/rest/v1/transactions?id=eq.${encodeURIComponent(txId)}`, {
-          method: "DELETE",
-          headers: {
-            apikey: key,
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-            Prefer: "return=representation"
-          }
-        });
-        if (resp.ok) {
-          deletedRows = await resp.json().catch(() => []);
-          if (Array.isArray(deletedRows) && deletedRows.length > 0) {
-            return res.json({ success: true, id: txId, deleted: deletedRows });
-          }
-        } else {
-          lastError = await resp.text().catch(() => "");
-        }
-      } catch (e: any) {
-        lastError = e.message;
-      }
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(response.status).json({ success: false, error: errorText || "Failed to delete transaction." });
     }
 
-    // 2. If not deleted yet, try delete by 'invoice_no'
-    const invTarget = invoiceNo || txId;
-    if (invTarget && invTarget !== "undefined" && invTarget !== "null") {
-      try {
-        const respInv = await fetch(`${url}/rest/v1/transactions?invoice_no=eq.${encodeURIComponent(invTarget)}`, {
-          method: "DELETE",
-          headers: {
-            apikey: key,
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-            Prefer: "return=representation"
-          }
-        });
-        if (respInv.ok) {
-          deletedRows = await respInv.json().catch(() => []);
-          return res.json({ success: true, id: invTarget, deleted: deletedRows });
-        } else {
-          const invErr = await respInv.text().catch(() => "");
-          lastError = invErr || lastError;
-        }
-      } catch (e: any) {
-        lastError = e.message || lastError;
-      }
+    const deleted = await response.json().catch(() => []);
+    if (!Array.isArray(deleted) || deleted.length === 0) {
+      return res.status(404).json({ success: false, error: "Transaction not found." });
     }
 
-    if (deletedRows.length === 0 && lastError) {
-      return res.status(400).json({ success: false, error: lastError });
-    }
-
-    res.json({ success: true, id: txId || invoiceNo, deleted: deletedRows });
-  } catch (err: any) {
+    return res.json({ success: true, id: txId || invoiceNo, deleted });
+  } catch (err) {
     console.error("[SERVER] Delete transaction exception:", err);
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(503).json({ success: false, error: "Database unavailable." });
   }
 });
 
-// 3.3 Danger Zone: Destructive Actions Suite Endpoint (POST Method - Owner Only)
+// 3.3 Danger Zone// 3.3 Danger Zone: Destructive Actions Suite Endpoint (POST Method - Owner Only)
 app.post("/api/settings/reset_data", resetDataLimiter, requireOwner, (req: Request, res: Response) => {
   const actor = String((req as any).user?.username || "Owner");
   auditLog(actor, "DANGER_ZONE_RESET_BLOCKED", "production-data", "FAILURE", {
