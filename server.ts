@@ -1554,75 +1554,39 @@ app.put(["/api/transactions/:id", "/api/transactions"], requireOwner, async (req
 // 3.2 Delete Transaction// 3.2 Delete Transaction (DELETE /api/transactions/:id or /api/transactions - Owner Only)
 app.delete(["/api/transactions/:id", "/api/transactions"], requireOwner, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const txId = req.params.id || req.body?.id || req.query?.id;
-  const invoiceNo = req.body?.invoice_no || req.query?.invoice_no;
+  const rawId = String(req.params.id || req.body?.id || req.query?.id || "").trim();
 
-  if (!txId && !invoiceNo) {
-    return res.status(400).json({ success: false, error: "Transaction ID or Invoice Number is required for delete" });
+  if (!/^\d+$/.test(rawId)) {
+    return res.status(400).json({
+      success: false,
+      error: "A numeric transaction ID is required for deletion. Invoice number deletion is disabled for data safety."
+    });
   }
 
   try {
-    let deletedRows: any[] = [];
-    let lastError = "";
-
-    // 1. If txId is provided, try delete by 'id'
-    if (txId && txId !== "undefined" && txId !== "null") {
-      try {
-        const resp = await fetch(`${url}/rest/v1/transactions?id=eq.${encodeURIComponent(txId)}`, {
-          method: "DELETE",
-          headers: {
-            apikey: key,
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-            Prefer: "return=representation"
-          }
-        });
-        if (resp.ok) {
-          deletedRows = await resp.json().catch(() => []);
-          if (Array.isArray(deletedRows) && deletedRows.length > 0) {
-            return res.json({ success: true, id: txId, deleted: deletedRows });
-          }
-        } else {
-          lastError = await resp.text().catch(() => "");
-        }
-      } catch (e: any) {
-        lastError = e.message;
+    const response = await fetch(`${url}/rest/v1/transactions?id=eq.${encodeURIComponent(rawId)}`, {
+      method: "DELETE",
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        Prefer: "return=representation"
       }
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Transaction deletion rejected by database." });
     }
 
-    // 2. If not deleted yet, try delete by 'invoice_no'
-    const invTarget = invoiceNo || txId;
-    if (invTarget && invTarget !== "undefined" && invTarget !== "null") {
-      try {
-        const respInv = await fetch(`${url}/rest/v1/transactions?invoice_no=eq.${encodeURIComponent(invTarget)}`, {
-          method: "DELETE",
-          headers: {
-            apikey: key,
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-            Prefer: "return=representation"
-          }
-        });
-        if (respInv.ok) {
-          deletedRows = await respInv.json().catch(() => []);
-          return res.json({ success: true, id: invTarget, deleted: deletedRows });
-        } else {
-          const invErr = await respInv.text().catch(() => "");
-          lastError = invErr || lastError;
-        }
-      } catch (e: any) {
-        lastError = e.message || lastError;
-      }
+    const deletedRows = await response.json().catch(() => []);
+    if (!Array.isArray(deletedRows) || deletedRows.length !== 1) {
+      return res.status(404).json({ success: false, error: "Transaction not found." });
     }
 
-    if (deletedRows.length === 0 && lastError) {
-      return res.status(400).json({ success: false, error: lastError });
-    }
-
-    res.json({ success: true, id: txId || invoiceNo, deleted: deletedRows });
-  } catch (err: any) {
-    console.error("[SERVER] Delete transaction exception:", err);
-    res.status(500).json({ success: false, error: err.message });
+    auditLog(String((req as any).user?.username || "unknown"), "DELETE_TRANSACTION", rawId, "SUCCESS");
+    return res.json({ success: true, id: rawId, deleted: deletedRows });
+  } catch {
+    return res.status(503).json({ success: false, error: "Transaction service is temporarily unavailable." });
   }
 });
 
