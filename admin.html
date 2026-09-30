@@ -5443,147 +5443,104 @@
 
     async function submitCsvBatch() {
       const btn = document.getElementById("confirm-import-btn");
+      if (!btn) return;
+
+      if (pendingCsvErrors.length > 0) {
+        showToast("The CSV contains invalid rows. Correct the listed rows before importing.", "error");
+        checkImportButtonState();
+        return;
+      }
+
+      if (!pendingCsvRows.length) {
+        showToast("There are no valid rows to import.", "error");
+        return;
+      }
+
       btn.disabled = true;
       btn.textContent = "Batch Inserting...";
 
       try {
         if (currentImportMode === "suppliers") {
-          // 1. Python webview backend import
-          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.import_csv_suppliers === "function") {
-            const res = await window.pywebview.api.import_csv_suppliers(rawCsvText);
-            if (res && res.success) {
-              closeImportModal();
-              showToast(`Suppliers Imported! ${res.inserted_count} suppliers added/updated.`, "success");
-              if (typeof loadSuppliersList === "function") await loadSuppliersList();
-              return;
-            } else {
-              showToast(res ? res.error : "Suppliers import failed", "error");
-              return;
-            }
-          }
-
-          // Server API import through the authenticated Express proxy.
           const validRecords = pendingCsvRows.map(r => ({ name: r.name, trn: r.trn }));
-          try {
-            const srvRes = await fetch("/api/import/suppliers", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ rows: validRecords })
-            });
-            const resData = await srvRes.json().catch(() => ({}));
 
-            if (srvRes.ok && resData.success) {
-              closeImportModal();
-              const insertedCount = Number(resData.inserted ?? resData.inserted_count ?? validRecords.length);
-              showToast(`Suppliers Imported! ${insertedCount} suppliers added successfully.`, "success");
-              if (typeof loadSuppliersList === "function") await loadSuppliersList();
-              return;
-            }
+          const srvRes = await fetch("/api/import/suppliers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rows: validRecords })
+          });
 
-            showToast(resData.error || resData.message || `Supplier import rejected (HTTP ${srvRes.status}).`, "error");
-            return;
-          } catch (err) {
-            console.error("Supplier import transport error:", err);
-            showToast("Could not contact the server. No supplier data was reported as imported.", "error");
-            return;
-          }
-        } else {
-          // Transactions mode - Enforce Mandatory Radio Selection
-          const forcedType = getSelectedImportForcedType();
-          if (!forcedType) {
-            showToast("Please select mandatory routing type (Import Sales or Import Purchases) before submitting.", "error");
-            btn.disabled = false;
-            btn.textContent = "Confirm & Batch Insert into Supabase";
-            return;
+          const result = await srvRes.json().catch(() => ({}));
+          if (!srvRes.ok || !result.success) {
+            throw new Error(result.error || result.message || `Supplier import rejected (HTTP ${srvRes.status}).`);
           }
 
-          const totalRowsToImport = pendingCsvRows.length;
+          closeImportModal();
+          const insertedCount = Number(result.inserted ?? result.inserted_count ?? validRecords.length);
+          showToast(`Suppliers Imported Successfully: ${insertedCount} records saved to the database.`, "success");
+          if (typeof loadSuppliersList === "function") await loadSuppliersList();
+          return;
+        }
 
-          // Helper to reset filters and refresh view so all imported records are immediately visible
-          const onImportSuccess = async (insertedCount) => {
-            closeImportModal();
-            // Automatically switch filter to all_time and disable period sync so imported records with any date are visible
-            currentFilter = "all_time";
-            ledgerPeriodSyncMode = "all";
-            ledgerSearchTerm = "";
-            currentDateFrom = null;
-            currentDateTo = null;
-            const periodSelect = document.getElementById("period-selector");
-            if (periodSelect) periodSelect.value = "all_time";
-            const periodLabel = document.getElementById("current-period-label");
-            if (periodLabel) periodLabel.textContent = "All Records";
+        const forcedType = getSelectedImportForcedType();
+        if (!forcedType) {
+          showToast("Please select Import Sales or Import Purchases before submitting.", "error");
+          return;
+        }
 
-            await loadAnalytics("all_time");
-            await loadLiveTransactions();
+        const validRecords = pendingCsvRows.map(r => ({
+          transaction_type: forcedType,
+          transaction_date: r.transaction_date,
+          invoice_no: r.invoice_no,
+          party_name: r.party_name,
+          trn: r.trn,
+          amount_before_tax: r.amount_before_tax,
+          vat_rate: r.vat_rate,
+          vat_amount: r.vat_amount,
+          amount_with_tax: r.amount_with_tax,
+          tax_mode: r.tax_mode
+        }));
 
-            const successMsg = `✓ Successfully imported all ${forcedType.toUpperCase()} records: ${insertedCount} of ${totalRowsToImport} inserted into the database!`;
-            showToast(successMsg, "success");
-          };
+        const srvRes = await fetch("/api/import/transactions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows: validRecords, forced_type: forcedType })
+        });
 
-          // 1. Python webview backend import with forced_type
-          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.import_csv_transactions === "function") {
-            const res = await window.pywebview.api.import_csv_transactions(rawCsvText, forcedType);
-            if (res && res.success) {
-              await onImportSuccess(res.inserted_count || totalRowsToImport);
-              return;
-            } else {
-              showToast(res ? res.error : "Transactions import failed", "error");
-              return;
-            }
-          }
+        const result = await srvRes.json().catch(() => ({}));
+        if (!srvRes.ok || !result.success) {
+          throw new Error(result.error || result.message || `Transaction import rejected (HTTP ${srvRes.status}).`);
+        }
 
-          // Server API import with forced type through the authenticated Express proxy.
-          const validRecords = pendingCsvRows.map(r => ({
-            transaction_type: forcedType,
-            transaction_date: r.transaction_date,
-            invoice_no: r.invoice_no,
-            party_name: r.party_name,
-            trn: r.trn,
-            amount_before_tax: r.amount_before_tax,
-            vat_rate: r.vat_rate,
-            vat_amount: r.vat_amount,
-            amount_with_tax: r.amount_with_tax,
-            tax_mode: r.tax_mode
-          }));
+        const insertedCount = Number(result.inserted ?? result.inserted_count ?? 0);
 
-          try {
-            const srvRes = await fetch("/api/import/transactions", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ rows: validRecords, forced_type: forcedType })
-            });
-            const resData = await srvRes.json().catch(() => ({}));
-
-            if (srvRes.ok && resData.success) {
-              await onImportSuccess(Number(resData.inserted ?? resData.inserted_count ?? validRecords.length));
-              return;
-            }
-
-            showToast(resData.error || resData.message || `Transaction import rejected (HTTP ${srvRes.status}).`, "error");
-            return;
-          } catch (err) {
-            console.error("Transaction import transport error:", err);
-            showToast("Could not contact the server. No transactions were reported as imported.", "error");
-            return;
-          }
-
-        // No simulation fallback. A transaction import succeeds only after a real server response.
         closeImportModal();
         currentFilter = "all_time";
         ledgerPeriodSyncMode = "all";
+        ledgerSearchTerm = "";
+        currentDateFrom = null;
+        currentDateTo = null;
+
+        const periodSelect = document.getElementById("period-selector");
+        if (periodSelect) periodSelect.value = "all_time";
+
+        const periodLabel = document.getElementById("current-period-label");
+        if (periodLabel) periodLabel.textContent = "All Records";
+
         await loadAnalytics("all_time");
         await loadLiveTransactions();
-        showToast(`Import batch complete! ${pendingCsvRows.length} records processed.`, "success");
 
+        showToast(`Successfully imported ${insertedCount} ${forcedType.toUpperCase()} records into the database.`, "success");
       } catch (err) {
-        showToast(err.message || "Failed to process import batch", "error");
+        console.error("[IMPORT] Batch import failed:", err);
+        showToast(err instanceof Error ? err.message : "Batch import failed. No success was reported.", "error");
       } finally {
         btn.disabled = false;
         btn.textContent = "Confirm & Batch Insert into Supabase";
+        checkImportButtonState();
       }
     }
 
-    // Modal helpers
+    // Modal helpers    // Modal helpers
     function openSystemInfoModal() {
       document.getElementById("system-info-modal").classList.remove("hidden");
     }
