@@ -20,36 +20,34 @@ import { createServer as createViteServer } from "vite";
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
-
-// ============================================================================
-// PRODUCTION SECRET & ENVIRONMENT VALIDATION (CQ-03)
-// ============================================================================
 const isProd = process.env.NODE_ENV === "production";
 
-if (isProd) {
-  if (!process.env.AUTH_SECRET_KEY && !process.env.JWT_SECRET) {
-    console.warn("[WARN] AUTH_SECRET_KEY/JWT_SECRET not set in production. Using secure default fallback.");
-    process.env.AUTH_SECRET_KEY = "uae_tax_accounting_system_secure_secret_2026_jwt_production_fallback_key";
-  }
-  const checkKey = (process.env.AUTH_SECRET_KEY || process.env.JWT_SECRET || "").trim();
-  if (checkKey.length < 32) {
-    console.warn("[WARN] AUTH_SECRET_KEY length < 32 in production. Expanding fallback.");
-  }
-  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
-    console.warn("[WARN] SUPABASE_URL or SUPABASE_KEY not set in production. Using default fallback configuration.");
-  }
+function requireEnv(name: string): string {
+  const value = String(process.env[name] || "").trim();
+  if (!value) throw new Error(`[FATAL CONFIG] Missing required environment variable: ${name}`);
+  return value;
 }
 
-const DEFAULT_SUPABASE_URL = "https://frmgpbwbmarkatjroflr.supabase.co";
-const DEFAULT_SUPABASE_KEY = "sb_secret_lESPIyr1EUoMeckMYNPhBQ_wOBAaMya";
+const AUTH_SECRET_KEY = requireEnv("AUTH_SECRET_KEY");
+if (AUTH_SECRET_KEY.length < 32) {
+  throw new Error("[FATAL CONFIG] AUTH_SECRET_KEY must be at least 32 characters.");
+}
 
-const rawAuthSecret = (process.env.AUTH_SECRET_KEY || process.env.JWT_SECRET || "uae_tax_accounting_system_secure_secret_2026_jwt").trim();
-const AUTH_SECRET_KEY: string = rawAuthSecret;
+const SUPABASE_URL = requireEnv("SUPABASE_URL").replace(/\/+$/, "");
+const SUPABASE_KEY = requireEnv("SUPABASE_KEY");
 
-const rawSupabaseUrl = (process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, "");
-const rawSupabaseKey = (process.env.SUPABASE_KEY || DEFAULT_SUPABASE_KEY).trim();
-const SUPABASE_URL: string = rawSupabaseUrl;
-const SUPABASE_KEY: string = rawSupabaseKey;
+try {
+  const parsedUrl = new URL(SUPABASE_URL);
+  if (isProd && parsedUrl.protocol !== "https:") {
+    throw new Error("Production SUPABASE_URL must use HTTPS.");
+  }
+} catch (err: any) {
+  throw new Error(`[FATAL CONFIG] Invalid SUPABASE_URL: ${err.message}`);
+}
+
+function getSupabaseConfig(): { url: string; key: string } {
+  return { url: SUPABASE_URL, key: SUPABASE_KEY };
+}
 
 function getUAECurrentDate(): string {
   try {
@@ -59,9 +57,8 @@ function getUAECurrentDate(): string {
       month: "2-digit",
       day: "2-digit"
     }).format(new Date());
-  } catch (err) {
-    console.warn("[TIMEZONE] Fallback to UTC date string:", err);
-    return new Date().toISOString().split("T")[0];
+  } catch {
+    return new Date().toISOString().slice(0, 10);
   }
 }
 
@@ -100,7 +97,7 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
 // Rate Limiters (CQ-05)
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 200, // Generous limit for dev / preview testing
+  max: 10, // Failed login attempts per 15 minutes per IP
   skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
@@ -305,153 +302,12 @@ function requireOwner(req: Request, res: Response, next: NextFunction) {
 }
 
 // Helper to read and write config.json
-function readConfigJson() {
-  const cfgPath = path.join(process.cwd(), "config.json");
-  if (fs.existsSync(cfgPath)) {
-    try {
-      return JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
-    } catch {
-      return { default_vat_rate: 5.0 };
-    }
-  }
-  return { default_vat_rate: 5.0 };
-}
-
-function writeConfigJson(data: any) {
-  const cfgPath = path.join(process.cwd(), "config.json");
-  fs.writeFileSync(cfgPath, JSON.stringify(data, null, 2), "utf-8");
-}
-
-function updateEnvFile(url: string, key: string) {
-  const envPath = path.join(process.cwd(), ".env");
-  let content = "";
-  if (fs.existsSync(envPath)) {
-    content = fs.readFileSync(envPath, "utf-8");
-  }
-  const lines = content.split(/\r?\n/);
-  let urlSet = false;
-  let keySet = false;
-  const newLines = lines.map(line => {
-    if (line.startsWith("SUPABASE_URL=") || line.startsWith("export SUPABASE_URL=")) {
-      urlSet = true;
-      return `SUPABASE_URL=${url}`;
-    }
-    if (line.startsWith("SUPABASE_KEY=") || line.startsWith("export SUPABASE_KEY=")) {
-      keySet = true;
-      return `SUPABASE_KEY=${key}`;
-    }
-    return line;
-  });
-  if (!urlSet) newLines.push(`SUPABASE_URL=${url}`);
-  if (!keySet) newLines.push(`SUPABASE_KEY=${key}`);
-  fs.writeFileSync(envPath, newLines.filter(Boolean).join("\n") + "\n", "utf-8");
-  process.env.SUPABASE_URL = url;
-  process.env.SUPABASE_KEY = key;
-}
-
-// Helper to safely get Supabase credentials with fallback defaults
-function getSupabaseConfig(): { url: string; key: string } {
-  const url = (process.env.SUPABASE_URL || SUPABASE_URL || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, "");
-  const key = (process.env.SUPABASE_KEY || SUPABASE_KEY || DEFAULT_SUPABASE_KEY).trim();
-  return { url, key };
-}
-
 // ============================================================================
 // API ROUTES (PROTECTED SERVER-SIDE PROXY FOR SUPABASE WITH RBAC)
 // ============================================================================
 
 // 0. Authentication & User Management Routes
-interface PersistedUser {
-  id: string;
-  username: string;
-  passwordHash: string;
-  role: "Owner" | "Clerk";
-  created_at: string;
-}
-
-const USERS_FILE_PATH = path.join(process.cwd(), "users.json");
-
-function loadPersistedUsers(): PersistedUser[] {
-  if (fs.existsSync(USERS_FILE_PATH)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(USERS_FILE_PATH, "utf-8"));
-      if (Array.isArray(data)) return data;
-    } catch (err) {
-      console.warn("[USERS] Failed to load users.json:", err);
-    }
-  }
-  return [];
-}
-
-function savePersistedUsers(users: PersistedUser[]) {
-  try {
-    const tempPath = USERS_FILE_PATH + ".tmp";
-    fs.writeFileSync(tempPath, JSON.stringify(users, null, 2), "utf-8");
-    fs.renameSync(tempPath, USERS_FILE_PATH);
-  } catch (err) {
-    console.error("[USERS] Failed to save users.json atomically:", err);
-  }
-}
-
-const MEMORY_USERS: Array<PersistedUser> = [];
-
-// 1. Environment variable configured custom accounts (take highest priority)
-const configuredOwnerUser = (process.env.OWNER_USER || "").trim();
-const configuredOwnerPass = process.env.OWNER_PASS || "";
-const configuredClerkUser = (process.env.CLERK_USER || "").trim();
-const configuredClerkPass = process.env.CLERK_PASS || "";
-
-if (configuredOwnerUser && configuredOwnerPass) {
-  MEMORY_USERS.push({
-    id: "env-owner-custom",
-    username: configuredOwnerUser,
-    passwordHash: bcrypt.hashSync(configuredOwnerPass, 12),
-    role: "Owner",
-    created_at: new Date().toISOString()
-  });
-}
-
-if (configuredClerkUser && configuredClerkPass && configuredClerkUser.toLowerCase() !== configuredOwnerUser.toLowerCase()) {
-  MEMORY_USERS.push({
-    id: "env-clerk-custom",
-    username: configuredClerkUser,
-    passwordHash: bcrypt.hashSync(configuredClerkPass, 12),
-    role: "Clerk",
-    created_at: new Date().toISOString()
-  });
-}
-
-// 2. Standard system accounts (seed defaults if not overridden by env config)
-const defaultUsers: Array<{ id: string; username: string; pass: string; role: "Owner" | "Clerk" }> = [
-  { id: "seed-owner-admin", username: "admin", pass: "Owner@123456", role: "Owner" },
-  { id: "seed-owner-owner", username: "owner", pass: "Owner@123456", role: "Owner" },
-  { id: "seed-clerk-shareef", username: "shareef", pass: "Clerk@123456", role: "Clerk" },
-  { id: "seed-clerk-clerk", username: "clerk", pass: "Clerk@123456", role: "Clerk" },
-];
-
-for (const def of defaultUsers) {
-  if (!MEMORY_USERS.some(u => u.username.toLowerCase() === def.username.toLowerCase())) {
-    MEMORY_USERS.push({
-      id: def.id,
-      username: def.username,
-      passwordHash: bcrypt.hashSync(def.pass, 12),
-      role: def.role,
-      created_at: new Date().toISOString()
-    });
-  }
-}
-
-// 3. Load persisted custom users from users.json on disk
-const persistedUsersList = loadPersistedUsers();
-for (const pu of persistedUsersList) {
-  const existingIdx = MEMORY_USERS.findIndex(u => u.username.toLowerCase() === pu.username.toLowerCase());
-  if (existingIdx !== -1) {
-    MEMORY_USERS[existingIdx] = pu;
-  } else {
-    MEMORY_USERS.push(pu);
-  }
-}
-
+// Production identity is authoritative in public.users. No hardcoded or file-backed production users.
 app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
   const { username } = req.body;
   const rawUser = String(username || "").trim();
@@ -471,7 +327,6 @@ app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
   let authenticatedUser: { username: string; role: "Owner" | "Clerk" } | null = null;
   let authStage: "AUTH_USER_NOT_FOUND" | "AUTH_PASSWORD_MISMATCH" | "AUTH_INVALID_ROLE" | "AUTH_DATABASE_ERROR" | "AUTH_SUCCESS" = "AUTH_USER_NOT_FOUND";
   let userFoundInDb = false;
-  let userFoundInMem = false;
   let databaseError = false;
 
   // 1. Authenticate against Supabase Database Users Table (Case-Insensitive Search)
@@ -487,7 +342,9 @@ app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
     );
     if (srvRes.ok) {
       const dbUsers = await srvRes.json();
-      if (Array.isArray(dbUsers) && dbUsers.length > 0) {
+      if (Array.isArray(dbUsers) && dbUsers.length === 0) {
+        authStage = "AUTH_USER_NOT_FOUND";
+      } else if (Array.isArray(dbUsers) && dbUsers.length > 0) {
         for (const usr of dbUsers) {
           const matchedName = String(usr.username || usr.email || "").trim().toLowerCase() === u;
           if (matchedName) {
@@ -536,8 +393,12 @@ app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
       }
     } else {
       console.warn(`[AUTH] Supabase user lookup returned status ${srvRes.status}`);
-      databaseError = true;
-      authStage = "AUTH_DATABASE_ERROR";
+      if (srvRes.status === 404) {
+        authStage = "AUTH_USER_NOT_FOUND";
+      } else {
+        databaseError = true;
+        authStage = "AUTH_DATABASE_ERROR";
+      }
     }
   } catch (err) {
     console.warn("[AUTH] Supabase user query notice:", err);
@@ -545,25 +406,8 @@ app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
     authStage = "AUTH_DATABASE_ERROR";
   }
 
-  // 2. Check seed/memory user store (FORBIDDEN IN PRODUCTION - fallback restricted to local dev sandbox environments only)
-  if (!authenticatedUser && !isProd) {
-    for (const mu of MEMORY_USERS) {
-      if (mu.username.toLowerCase() === u) {
-        userFoundInMem = true;
-        const match = await bcrypt.compare(password, mu.passwordHash);
-        if (match) {
-          authenticatedUser = { username: mu.username, role: mu.role };
-          authStage = "AUTH_SUCCESS";
-          break;
-        } else {
-          authStage = "AUTH_PASSWORD_MISMATCH";
-        }
-      }
-    }
-  }
-
   // Safe internal diagnostics logging (No passwords, hashes, JWTs, or secret keys exposed)
-  console.log(`[AUTH-DIAG] userFound=${userFoundInDb || userFoundInMem} userIdPresent=${!!authenticatedUser} passwordFieldPresent=true passwordHashFormat=bcrypt role=${authenticatedUser?.role || "none"} stage=${authStage}`);
+  console.log(`[AUTH-DIAG] userFound=${userFoundInDb} userIdPresent=${!!authenticatedUser} passwordFieldPresent=true passwordHashFormat=bcrypt role=${authenticatedUser?.role || "none"} stage=${authStage}`);
 
   // 3. Fail-safe production database outage check
   if (databaseError && isProd) {
@@ -598,81 +442,42 @@ app.get("/api/auth/me", requireAuth, (req: Request, res: Response) => {
 });
 
 // User Management API Endpoints (Owner Only) - Rate Limited with userMutationLimiter
-app.get("/api/users", requireOwner, async (req: Request, res: Response) => {
+app.get("/api/users", requireOwner, async (_req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  let supabaseUsers: any[] = [];
-
   try {
-    const srvRes = await fetch(`${url}/rest/v1/users?select=id,username,role,created_at`, {
+    const response = await fetch(`${url}/rest/v1/users?select=id,username,email,role,created_at&order=username.asc`, {
       headers: { apikey: key, Authorization: `Bearer ${key}` }
     });
-    if (srvRes.ok) {
-      const data = await srvRes.json();
-      if (Array.isArray(data)) supabaseUsers = data;
+    if (!response.ok) {
+      return res.status(response.status).json({ success: false, error: "Unable to load users from the database." });
     }
-  } catch (err) {
-    console.warn("[USERS] Fetch users from Supabase notice:", err);
+    const users = await response.json();
+    return res.json({ success: true, users: Array.isArray(users) ? users : [] });
+  } catch {
+    return res.status(503).json({ success: false, error: "User directory is temporarily unavailable." });
   }
-
-  // Merge users from MEMORY_USERS and Supabase list, keeping usernames unique
-  const mergedMap = new Map<string, any>();
-
-  // 1. Populate with all local memory users
-  MEMORY_USERS.forEach(mu => {
-    mergedMap.set(mu.username.toLowerCase().trim(), {
-      id: mu.id,
-      username: mu.username,
-      role: mu.role,
-      created_at: mu.created_at
-    });
-  });
-
-  // 2. Merge Supabase users
-  supabaseUsers.forEach(su => {
-    if (su && su.username) {
-      const uname = String(su.username).toLowerCase().trim();
-      const existing = mergedMap.get(uname);
-      mergedMap.set(uname, {
-        id: existing?.id || su.id || `user-${Date.now()}`,
-        username: su.username,
-        role: su.role || existing?.role || "Clerk",
-        created_at: su.created_at || existing?.created_at || new Date().toISOString()
-      });
-    }
-  });
-
-  const usersList = Array.from(mergedMap.values());
-  return res.json({ success: true, users: usersList });
 });
 
 app.post("/api/users", userMutationLimiter, requireOwner, async (req: Request, res: Response) => {
-  const { username, role } = req.body;
-  const rawUser = String(username || "").trim();
-  // Passwords MUST NOT be trimmed; preserve exact character sequence entered by user
-  const password = typeof req.body.password === "string" ? req.body.password : "";
-  const rawRole: "Clerk" | "Owner" = String(role || "Owner").trim().toLowerCase() === "clerk" ? "Clerk" : "Owner";
+  const username = String(req.body?.username || "").trim();
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const roleInput = String(req.body?.role || "").trim().toLowerCase();
 
-  // Strict Input Validation
-  if (!rawUser || rawUser.length < 3 || rawUser.length > 50 || !/^[a-zA-Z0-9_.-]+$/.test(rawUser)) {
-    return res.status(400).json({ success: false, error: "Username must be 3-50 alphanumeric characters (or _ . -)." });
+  if (!/^[a-zA-Z0-9_.-]{3,50}$/.test(username)) {
+    return res.status(400).json({ success: false, error: "Username must be 3-50 characters using letters, numbers, _, . or -." });
   }
-
-  if (!password || password.length < 6) {
+  if (password.length < 6) {
     return res.status(400).json({ success: false, error: "Password must be at least 6 characters long." });
+  }
+  if (roleInput !== "owner" && roleInput !== "clerk") {
+    return res.status(400).json({ success: false, error: "Role must be Owner or Clerk." });
   }
 
   const { url, key } = getSupabaseConfig();
   const hashedPassword = await hashPassword(password);
-  const newUser = {
-    username: rawUser,
-    password: hashedPassword,
-    role: rawRole,
-    created_at: new Date().toISOString()
-  };
 
-  // 1. Try posting to Supabase users table
   try {
-    await fetch(`${url}/rest/v1/users`, {
+    const response = await fetch(`${url}/rest/v1/users`, {
       method: "POST",
       headers: {
         apikey: key,
@@ -680,71 +485,64 @@ app.post("/api/users", userMutationLimiter, requireOwner, async (req: Request, r
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify(newUser)
+      body: JSON.stringify({
+        username,
+        password: hashedPassword,
+        role: roleInput === "owner" ? "Owner" : "Clerk",
+        created_at: new Date().toISOString()
+      })
     });
-  } catch (err) {
-    console.warn("[USERS] Insert into Supabase notice:", err);
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Failed to create user." });
+    }
+    await response.text().catch(() => "");
+    auditLog((req as any).user.username, "CREATE_USER", username, "SUCCESS", { role: roleInput });
+    return res.status(201).json({
+      success: true,
+      message: `User '${username}' registered successfully.`,
+      user: { username, role: roleInput === "owner" ? "Owner" : "Clerk" }
+    });
+  } catch {
+    return res.status(503).json({ success: false, error: "User service is temporarily unavailable." });
   }
-
-  // 2. Cache in memory store and persist to users.json disk file
-  const createdObj: PersistedUser = {
-    id: `user-${Date.now()}`,
-    username: rawUser,
-    passwordHash: hashedPassword,
-    role: rawRole,
-    created_at: newUser.created_at
-  };
-
-  const existingIdx = MEMORY_USERS.findIndex(u => u.username.toLowerCase() === rawUser.toLowerCase());
-  if (existingIdx !== -1) {
-    MEMORY_USERS[existingIdx] = createdObj;
-  } else {
-    MEMORY_USERS.push(createdObj);
-  }
-
-  // Persist created/updated users (excluding bootstrap seed entries)
-  savePersistedUsers(MEMORY_USERS.filter(u => !u.id.startsWith("seed-") && !u.id.startsWith("env-")));
-
-  auditLog((req as any).user.username, "CREATE_USER", rawUser, "SUCCESS", { role: rawRole });
-  return res.json({ success: true, message: `User '${rawUser}' registered successfully.` });
 });
 
 app.put("/api/users/:identifier", userMutationLimiter, requireOwner, async (req: Request, res: Response) => {
-  const { identifier } = req.params;
-  const { role, username } = req.body;
-  const targetIdStr = String(identifier || "").trim();
-  const password = typeof req.body.password === "string" ? req.body.password : undefined;
-  const rawRole = role ? (String(role).trim().toLowerCase() === "clerk" ? "Clerk" : "Owner") : undefined;
-  const newUsername = username ? String(username).trim() : undefined;
+  const identifier = String(req.params.identifier || "").trim();
+  if (!identifier) return res.status(400).json({ success: false, error: "User identifier is required." });
 
-  if (password === undefined && !rawRole && !newUsername) {
-    return res.status(400).json({ success: false, error: "No fields provided to update." });
-  }
+  const password = req.body?.password !== undefined
+    ? (typeof req.body.password === "string" ? req.body.password : "")
+    : undefined;
+  const username = req.body?.username !== undefined ? String(req.body.username).trim() : undefined;
+  const role = req.body?.role !== undefined ? String(req.body.role).trim().toLowerCase() : undefined;
 
   if (password !== undefined && password.length < 6) {
     return res.status(400).json({ success: false, error: "Password must be at least 6 characters long." });
   }
+  if (username !== undefined && !/^[a-zA-Z0-9_.-]{3,50}$/.test(username)) {
+    return res.status(400).json({ success: false, error: "Username must be 3-50 characters using letters, numbers, _, . or -." });
+  }
+  if (role !== undefined && role !== "owner" && role !== "clerk") {
+    return res.status(400).json({ success: false, error: "Role must be Owner or Clerk." });
+  }
 
-  if (newUsername && (newUsername.length < 3 || newUsername.length > 50 || !/^[a-zA-Z0-9_.-]+$/.test(newUsername))) {
-    return res.status(400).json({ success: false, error: "Username must be 3-50 alphanumeric characters (or _ . -)." });
+  const updatePayload: Record<string, string> = {};
+  if (password !== undefined) updatePayload.password = await hashPassword(password);
+  if (username !== undefined) updatePayload.username = username;
+  if (role !== undefined) updatePayload.role = role === "owner" ? "Owner" : "Clerk";
+  if (Object.keys(updatePayload).length === 0) {
+    return res.status(400).json({ success: false, error: "No supported fields provided for update." });
   }
 
   const { url, key } = getSupabaseConfig();
-  const updatePayload: Record<string, any> = {};
-  if (password !== undefined) updatePayload.password = await hashPassword(password);
-  if (rawRole) updatePayload.role = rawRole;
-  if (newUsername) updatePayload.username = newUsername;
+  const filter = /^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\}?$/.test(identifier)
+    ? `id=eq.${encodeURIComponent(identifier.replace(/[{}]/g, ""))}`
+    : `username=eq.${encodeURIComponent(identifier)}`;
 
-  // 1. Try updating in Supabase
   try {
-    const isNumeric = /^\d+$/.test(targetIdStr);
-    let supabaseUrl = "";
-    if (isNumeric) {
-      supabaseUrl = `${url}/rest/v1/users?or=(id.eq.${encodeURIComponent(targetIdStr)},username.eq.${encodeURIComponent(targetIdStr)})`;
-    } else {
-      supabaseUrl = `${url}/rest/v1/users?username.eq.${encodeURIComponent(targetIdStr)}`;
-    }
-    await fetch(supabaseUrl, {
+    const response = await fetch(`${url}/rest/v1/users?${filter}`, {
       method: "PATCH",
       headers: {
         apikey: key,
@@ -754,323 +552,282 @@ app.put("/api/users/:identifier", userMutationLimiter, requireOwner, async (req:
       },
       body: JSON.stringify(updatePayload)
     });
-  } catch (err) {
-    console.warn("[USERS] Supabase update user notice:", err);
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Failed to update user." });
+    }
+    const data = await response.json().catch(() => []);
+    if (!Array.isArray(data) || data.length === 0) {
+      return res.status(404).json({ success: false, error: "User not found." });
+    }
+    auditLog((req as any).user.username, "UPDATE_USER", identifier, "SUCCESS");
+    const updatedUser = data[0] || {};
+    return res.json({
+      success: true,
+      message: "User updated successfully.",
+      user: {
+        id: updatedUser.id,
+        username: updatedUser.username,
+        email: updatedUser.email,
+        role: updatedUser.role,
+        created_at: updatedUser.created_at
+      }
+    });
+  } catch {
+    return res.status(503).json({ success: false, error: "User service is temporarily unavailable." });
   }
-
-  // 2. Update memory cache and disk store
-  const idx = MEMORY_USERS.findIndex(u => String(u.id).toLowerCase() === targetIdStr.toLowerCase() || u.username.toLowerCase() === targetIdStr.toLowerCase());
-  if (idx !== -1) {
-    if (updatePayload.password) MEMORY_USERS[idx].passwordHash = updatePayload.password;
-    if (rawRole) MEMORY_USERS[idx].role = rawRole;
-    if (newUsername) MEMORY_USERS[idx].username = newUsername;
-    savePersistedUsers(MEMORY_USERS.filter(u => !u.id.startsWith("seed-") && !u.id.startsWith("env-")));
-  }
-
-  auditLog((req as any).user.username, "UPDATE_USER", targetIdStr, "SUCCESS", { role: rawRole, updatedUsername: !!newUsername, updatedPassword: password !== undefined });
-  return res.json({ success: true, message: `User '${newUsername || targetIdStr}' updated successfully.` });
 });
 
 app.delete("/api/users/:identifier", requireOwner, async (req: Request, res: Response) => {
-  const { identifier } = req.params;
-  const requestingUser = (req as any).user?.username || (req as any).user?.user || "";
-  const targetIdStr = String(identifier || "").trim().toLowerCase();
-  const reqUserStr = String(requestingUser || "").trim().toLowerCase();
+  const identifier = String(req.params.identifier || "").trim();
+  const actor = String((req as any).user?.username || "").trim().toLowerCase();
 
-  // SELF-LOCKOUT PREVENTION CHECK
-  if (targetIdStr && (targetIdStr === reqUserStr || targetIdStr === "admin" && reqUserStr === "admin")) {
-    return res.status(400).json({
-      success: false,
-      error: "Self-lockout prevented: You cannot delete your own currently logged-in account."
-    });
+  if (!identifier) return res.status(400).json({ success: false, error: "User identifier is required." });
+  if (identifier.toLowerCase() === actor) {
+    return res.status(400).json({ success: false, error: "Self-lockout prevented: You cannot delete your own account." });
   }
 
   const { url, key } = getSupabaseConfig();
+  const filter = /^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\}?$/.test(identifier)
+    ? `id=eq.${encodeURIComponent(identifier.replace(/[{}]/g, ""))}`
+    : `username=eq.${encodeURIComponent(identifier)}`;
 
-  // 1. Try deleting from Supabase
   try {
-    const isNumeric = /^\d+$/.test(identifier);
-    let supabaseUrl = "";
-    if (isNumeric) {
-      supabaseUrl = `${url}/rest/v1/users?or=(id.eq.${encodeURIComponent(identifier)},username.eq.${encodeURIComponent(identifier)})`;
-    } else {
-      supabaseUrl = `${url}/rest/v1/users?username.eq.${encodeURIComponent(identifier)}`;
-    }
-    await fetch(supabaseUrl, {
+    const response = await fetch(`${url}/rest/v1/users?${filter}`, {
       method: "DELETE",
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        Prefer: "return=representation"
+      }
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Failed to delete user." });
+    }
+    const data = await response.json().catch(() => []);
+    if (!Array.isArray(data) || data.length === 0) {
+      return res.status(404).json({ success: false, error: "User not found." });
+    }
+    auditLog(actor, "DELETE_USER", identifier, "SUCCESS");
+    return res.json({ success: true, message: `User '${identifier}' deleted successfully.` });
+  } catch {
+    return res.status(503).json({ success: false, error: "User service is temporarily unavailable." });
+  }
+});
+
+// 0.1 Settings
+app.get("/api/settings", requireOwner, async (_req: Request, res: Response) => {
+  const { url, key } = getSupabaseConfig();
+  try {
+    const response = await fetch(`${url}/rest/v1/settings?id=eq.application_config&select=value&limit=1`, {
       headers: { apikey: key, Authorization: `Bearer ${key}` }
     });
-  } catch (err) {
-    console.warn("[USERS] Delete from Supabase notice:", err);
-  }
-
-  // 2. Remove from memory cache and disk store
-  const idx = MEMORY_USERS.findIndex(u => String(u.id).toLowerCase() === targetIdStr || u.username.toLowerCase() === targetIdStr);
-  if (idx !== -1) {
-    if (MEMORY_USERS[idx].username.toLowerCase() === reqUserStr) {
-      return res.status(400).json({
-        success: false,
-        error: "Self-lockout prevented: You cannot delete your own currently logged-in account."
-      });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(502).json({ success: false, error: errText || "Unable to load application settings." });
     }
-    MEMORY_USERS.splice(idx, 1);
-    savePersistedUsers(MEMORY_USERS.filter(u => !u.id.startsWith("seed-") && !u.id.startsWith("env-")));
+    const rows = await response.json().catch(() => []);
+    const value = Array.isArray(rows) && rows.length > 0 && rows[0].value && typeof rows[0].value === "object"
+      ? rows[0].value
+      : {};
+    return res.json({
+      success: true,
+      database: { configured: true, host: new URL(SUPABASE_URL).hostname },
+      default_vat_rate: Number(value.default_vat_rate ?? 5.0)
+    });
+  } catch {
+    return res.status(503).json({ success: false, error: "Application settings are temporarily unavailable." });
   }
-
-  console.log(`[USERS] Deleted user '${identifier}' by admin '${requestingUser}'`);
-  return res.json({ success: true, message: `User '${identifier}' deleted successfully.` });
 });
 
-// 0.1 Settings & Dynamic Supabase Configuration (Owner Only)
-app.get("/api/settings", requireOwner, (req: Request, res: Response) => {
+app.post("/api/settings", requireOwner, async (req: Request, res: Response) => {
+  const vatRate = Number(req.body?.default_vat_rate);
+  if (!Number.isFinite(vatRate) || vatRate < 0 || vatRate > 100) {
+    return res.status(400).json({ success: false, error: "default_vat_rate must be a number between 0 and 100." });
+  }
+
   const { url, key } = getSupabaseConfig();
-  const cfg = readConfigJson();
-  let maskedKey = "";
-  if (key) {
-    if (key.length > 8) {
-      maskedKey = key.slice(0, 4) + "•".repeat(key.length - 8) + key.slice(-4);
-    } else {
-      maskedKey = "••••••••";
+  const value = { default_vat_rate: Math.round(vatRate * 100) / 100 };
+
+  try {
+    const response = await fetch(`${url}/rest/v1/settings`, {
+      method: "POST",
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=representation"
+      },
+      body: JSON.stringify({
+        id: "application_config",
+        value,
+        updated_at: new Date().toISOString()
+      })
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Application settings save was rejected by the database." });
     }
+    return res.json({ success: true, message: "Application settings saved successfully.", default_vat_rate: value.default_vat_rate });
+  } catch {
+    return res.status(503).json({ success: false, error: "Application settings are temporarily unavailable." });
   }
-  res.json({
-    success: true,
-    supabase_url: url,
-    supabase_key: "",
-    supabase_key_masked: maskedKey,
-    has_supabase_key: Boolean(key),
-    default_vat_rate: cfg.default_vat_rate ?? 5.0
-  });
 });
 
-app.post("/api/settings", requireOwner, (req: Request, res: Response) => {
-  const { supabase_url, supabase_key, default_vat_rate } = req.body;
-  if (!supabase_url) {
-    return res.status(400).json({ error: "SUPABASE_URL is required." });
-  }
-  const currentCfg = getSupabaseConfig();
-  const keyToSave = (!supabase_key || supabase_key.includes("•") || supabase_key === "") ? currentCfg.key : supabase_key;
-  if (!keyToSave) {
-    return res.status(400).json({ error: "SUPABASE_KEY is required." });
-  }
-  const vatRate = parseFloat(default_vat_rate) || 5.0;
-  updateEnvFile(supabase_url.trim(), keyToSave.trim());
-  writeConfigJson({ default_vat_rate: vatRate });
-  res.json({
-    success: true,
-    message: "Settings saved successfully! Database credentials updated and client reloaded.",
-    supabase_url: supabase_url.trim(),
-    default_vat_rate: vatRate
-  });
-});
-
-// 0.2 Report Recipients Settings
-app.get("/api/settings/recipients", requireAuth, async (req: Request, res: Response) => {
+app.get("/api/settings/recipients", requireAuth, async (_req: Request, res: Response) => {
   try {
     const { url, key } = getSupabaseConfig();
+    const response = await fetch(`${url}/rest/v1/settings?id=eq.report_recipients&select=value&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` }
+    });
+    if (!response.ok) {
+      return res.status(response.status).json({ success: false, error: "Unable to load report recipients." });
+    }
+    const rows = await response.json().catch(() => []);
+    const raw = Array.isArray(rows) && rows.length > 0 ? rows[0].value : [];
     let recipients: string[] = [];
-    if (url && key) {
-      try {
-        const resp = await fetch(`${url.replace(/\/+$/, "")}/rest/v1/settings?key=eq.daily_report_recipients&select=value`, {
-          headers: { apikey: key, Authorization: `Bearer ${key}` }
-        });
-        if (resp.ok) {
-          const rows = await resp.json();
-          if (Array.isArray(rows) && rows.length > 0 && rows[0].value) {
-            recipients = typeof rows[0].value === "string" ? JSON.parse(rows[0].value) : rows[0].value;
-          }
-        }
-      } catch (e) {
-        console.warn("[WARN] Could not query Supabase settings table:", e);
-      }
-    }
-    if (!recipients || recipients.length === 0) {
-      const cfg = readConfigJson();
-      recipients = cfg.report_recipients || [];
-    }
-    return res.json({ success: true, recipients });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    if (Array.isArray(raw)) recipients = raw.map((x: unknown) => String(x).trim().toLowerCase()).filter(Boolean);
+    return res.json({ success: true, recipients: Array.from(new Set(recipients)) });
+  } catch {
+    return res.status(503).json({ success: false, error: "Report recipient settings are temporarily unavailable." });
   }
 });
 
 app.post("/api/settings/recipients", requireOwner, async (req: Request, res: Response) => {
+  const rawList = req.body?.recipients;
+  let list: string[] = [];
+
+  if (Array.isArray(rawList)) {
+    list = rawList.map((x: unknown) => String(x).trim().toLowerCase()).filter(Boolean);
+  } else if (typeof rawList === "string") {
+    list = rawList.split(/[\n,;]+/).map((s: string) => s.trim().toLowerCase()).filter(Boolean);
+  }
+
+  list = Array.from(new Set(list));
+  const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  list = list.filter(email => validEmail.test(email));
+
+  if (list.length > 50) {
+    return res.status(400).json({ success: false, error: "A maximum of 50 report recipients is allowed." });
+  }
+
+  const { url, key } = getSupabaseConfig();
+
   try {
-    const rawList = req.body.recipients;
-    let list: string[] = [];
-    if (Array.isArray(rawList)) {
-      list = rawList.map((x: any) => String(x).trim().toLowerCase()).filter(Boolean);
-    } else if (typeof rawList === "string") {
-      list = rawList.split(/[\n,;]+/).map((s: string) => s.trim().toLowerCase()).filter(Boolean);
-    }
-    // Deduplicate
-    list = Array.from(new Set(list));
+    const response = await fetch(`${url}/rest/v1/settings`, {
+      method: "POST",
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=representation"
+      },
+      body: JSON.stringify({
+        id: "report_recipients",
+        value: list,
+        updated_at: new Date().toISOString()
+      })
+    });
 
-    // Update local config.json
-    const cfg = readConfigJson();
-    cfg.report_recipients = list;
-    writeConfigJson(cfg);
-
-    // Update Supabase settings table if accessible
-    const { url, key } = getSupabaseConfig();
-    if (url && key) {
-      try {
-        await fetch(`${url.replace(/\/+$/, "")}/rest/v1/settings`, {
-          method: "POST",
-          headers: {
-            apikey: key,
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-            Prefer: "resolution=merge-duplicates"
-          },
-          body: JSON.stringify({
-            key: "daily_report_recipients",
-            value: JSON.stringify(list),
-            updated_at: new Date().toISOString()
-          })
-        });
-      } catch (e) {
-        console.warn("[WARN] Supabase settings update error:", e);
-      }
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Report recipient settings were rejected by the database." });
     }
 
-    return res.json({ success: true, recipients: list, message: "Recipients saved successfully." });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.json({ success: true, recipients: list });
+  } catch {
+    return res.status(503).json({ success: false, error: "Report recipient settings are temporarily unavailable." });
   }
 });
 
 // 0.3 Daily Financial Report Cron Endpoint
-app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, res: Response) => {
-  const cronSecret = process.env.CRON_SECRET || "uae_accounting_cron_secret_2026";
-  const authHeader = req.headers.authorization || "";
-  const cronHeader = (req.headers["x-cron-secret"] as string) || "";
-  const qSecret = (req.query.secret as string) || "";
-  const bSecret = (req.body?.secret as string) || "";
-
-  let authorized = false;
-  if (authHeader.startsWith("Bearer ")) {
-    const token = authHeader.slice(7).trim();
-    if (token === cronSecret) {
-      authorized = true;
-    } else {
-      const user = verifyAuthToken(token);
-      if (user && String(user.role).toLowerCase() === "owner") {
-        authorized = true;
-      }
-    }
-  }
-  if (!authorized && (cronHeader === cronSecret || qSecret === cronSecret || bSecret === cronSecret)) {
-    authorized = true;
-  }
-
-  if (!authorized) {
-    return res.status(401).json({
-      success: false,
-      error: "Unauthorized: Invalid or missing CRON_SECRET."
-    });
-  }
-
-  const targetDate = (req.query.date as string) || (req.body?.date as string) || "";
-  const dryRun = String(req.query.dry_run || req.body?.dry_run || "").toLowerCase() === "true" || req.query.dry_run === "1";
-
-  // Execute admin_backend.py with arguments
-  const args = ["admin_backend.py", "--daily-report"];
-  if (targetDate) {
-    args.push("--date", targetDate);
-  }
-  if (dryRun) {
-    args.push("--dry-run");
-  }
-
-  const { spawn } = await import("child_process");
-  const py = spawn("python3", args, { cwd: process.cwd() });
-  let stdout = "";
-  let stderr = "";
-
-  py.stdout.on("data", (data) => { stdout += data.toString(); });
-  py.stderr.on("data", (data) => { stderr += data.toString(); });
-
-  py.on("close", (code) => {
-    const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return res.status(parsed.success ? 200 : 500).json(parsed);
-      } catch (e) {
-        // Fall through
-      }
-    }
-    if (code === 0) {
-      return res.json({ success: true, stdout, message: "Report processed successfully" });
-    } else {
-      return res.status(500).json({ success: false, error: stderr || stdout || `Process exited with code ${code}` });
-    }
+app.all(["/api/cron/daily-report", "/api/daily-report"], requireOwner, async (_req: Request, res: Response) => {
+  return res.status(503).json({
+    success: false,
+    error: "Daily report execution is not included in the Cloud Run build. No simulated or legacy desktop fallback is used."
   });
 });
 
-app.post("/api/test-connection", requireOwner, async (req: Request, res: Response) => {
-  const targetUrl = (req.body.supabase_url || process.env.SUPABASE_URL || "https://frmgpbwbmarkatjroflr.supabase.co").replace(/\/+$/, "");
-  const targetKey = req.body.supabase_key || process.env.SUPABASE_KEY || "sb_secret_lESPIyr1EUoMeckMYNPhBQ_wOBAaMya";
+app.post("/api/test-connection", requireOwner, async (_req: Request, res: Response) => {
+  const { url, key } = getSupabaseConfig();
   try {
-    const check = await fetch(`${targetUrl}/rest/v1/suppliers?select=name,trn&limit=1`, {
-      headers: {
-        apikey: targetKey,
-        Authorization: `Bearer ${targetKey}`
-      }
+    const check = await fetch(`${url}/rest/v1/suppliers?select=id&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` }
     });
     if (!check.ok) {
-      const errText = await check.text();
-      return res.json({ status: "error", message: `Supabase returned HTTP ${check.status}: ${errText}` });
+      return res.status(502).json({
+        status: "error",
+        message: `Supabase returned HTTP ${check.status}.`
+      });
     }
-    const data = await check.json();
     return res.json({
       status: "success",
-      message: `Connection verified successfully! Queried 'suppliers' table (${Array.isArray(data) ? data.length : 1} row checked).`
+      message: "Database connection verified successfully."
     });
-  } catch (err: any) {
-    return res.json({ status: "error", message: err.message || "Network error connecting to Supabase" });
+  } catch {
+    return res.status(503).json({
+      status: "error",
+      message: "Database connection is unavailable."
+    });
   }
 });
 
 // 1. Health & Connection Status
-app.get("/api/health", (req: Request, res: Response) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+let supabaseConnected = false;
+let lastSupabaseCheckAt = 0;
+
+async function verifySupabaseConnection(): Promise<boolean> {
+  const { url, key } = getSupabaseConfig();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(`${url}/rest/v1/suppliers?select=id&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+      signal: controller.signal
+    });
+    supabaseConnected = response.ok;
+    lastSupabaseCheckAt = Date.now();
+    return supabaseConnected;
+  } catch {
+    supabaseConnected = false;
+    lastSupabaseCheckAt = Date.now();
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+app.get("/_health", (_req: Request, res: Response) => {
+  return res.status(supabaseConnected ? 200 : 503).json({
+    status: supabaseConnected ? "healthy" : "degraded",
+    supabase_connected: supabaseConnected
+  });
 });
 
-app.get("/api/status", async (req: Request, res: Response) => {
-  const { url, key } = getSupabaseConfig();
-  try {
-    const check = await fetch(`${url}/rest/v1/suppliers?select=id&limit=1`, {
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`
-      }
-    });
-    res.json({
-      status: "ok",
-      supabase_connected: check.ok,
-      url: url.replace(/https?:\/\//, "").split(".")[0] + ".supabase.co"
-    });
-  } catch (err: any) {
-    res.json({
-      status: "ok",
-      supabase_connected: false,
-      error: err.message
-    });
-  }
+app.get("/api/health", (_req: Request, res: Response) => {
+  return res.status(200).json({
+    status: "ok",
+    supabase_connected: supabaseConnected,
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get("/api/status", async (_req: Request, res: Response) => {
+  const connected = await verifySupabaseConnection();
+  return res.status(connected ? 200 : 503).json({
+    status: connected ? "ok" : "degraded",
+    supabase_connected: connected,
+    checked_at: new Date().toISOString()
+  });
 });
 
 // 2. Suppliers Endpoints (Both Owner & Clerk can read and create)
 app.get("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const cfg = readConfigJson();
-  const deletedSuppliers: string[] = Array.isArray(cfg.deleted_suppliers) 
-    ? cfg.deleted_suppliers.map((x: any) => String(x).trim()) 
-    : [];
 
   try {
-    const response = await fetch(`${url}/rest/v1/suppliers?select=*&order=name.asc`, {
+    const response = await fetch(`${url}/rest/v1/suppliers?select=id,name,trn&order=name.asc`, {
       headers: {
         apikey: key,
         Authorization: `Bearer ${key}`
@@ -1081,14 +838,7 @@ app.get("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
       return res.status(response.status).json({ error: errText });
     }
     const data = await response.json();
-    const filtered = Array.isArray(data)
-      ? data.filter((s: any) => 
-          !deletedSuppliers.includes(String(s.trn || "").trim()) &&
-          !deletedSuppliers.includes(String(s.name || "").trim()) &&
-          !deletedSuppliers.includes(String(s.id || "").trim())
-        )
-      : data;
-    res.json(filtered);
+    return res.json(Array.isArray(data) ? data : []);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1099,17 +849,24 @@ app.post("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
   const rawBody = req.body;
   const items = Array.isArray(rawBody) ? rawBody : [rawBody];
 
-  // Clean suppliers: ensure format as text
-  const cleanedSuppliers = items.map((item: any) => {
-    let trnRaw = String(item.trn || "").trim();
-    let trnDigits = trnRaw.replace(/\D/g, "");
-    if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-    if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
-    return {
-      name: String(item.name || "UNKNOWN_SUPPLIER").trim(),
-      trn: trnDigits || trnRaw
-    };
-  });
+  if (items.length === 0 || items.length > 100) {
+    return res.status(400).json({ success: false, error: "Request must contain between 1 and 100 suppliers." });
+  }
+
+  const cleanedSuppliers = items.map((item: any) => ({
+    name: String(item?.name || "").trim(),
+    trn: String(item?.trn || "").trim()
+  }));
+
+  for (let i = 0; i < cleanedSuppliers.length; i++) {
+    const supplier = cleanedSuppliers[i];
+    if (!supplier.name) {
+      return res.status(400).json({ success: false, error: `Supplier name is required for row ${i + 1}.` });
+    }
+    if (!/^\d{15}$/.test(supplier.trn)) {
+      return res.status(400).json({ success: false, error: `Supplier TRN must contain exactly 15 numeric digits for row ${i + 1}.` });
+    }
+  }
 
   try {
     const response = await fetch(`${url}/rest/v1/suppliers`, {
@@ -1118,39 +875,42 @@ app.post("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
         apikey: key,
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
-        Prefer: "return=representation,resolution=merge-duplicates"
+        Prefer: "return=representation"
       },
       body: JSON.stringify(cleanedSuppliers)
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ error: errText });
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Supplier registration rejected by database." });
     }
-    const data = await response.json();
-    res.status(201).json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+
+    const data = await response.json().catch(() => []);
+    return res.status(201).json({ success: true, data });
+  } catch {
+    return res.status(503).json({ success: false, error: "Supplier service is temporarily unavailable." });
   }
 });
 
 // Update Supplier (PUT /api/suppliers/:identifier or PUT /api/suppliers)
 app.put(["/api/suppliers/:identifier", "/api/suppliers"], requireAuth, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const identifier = String(req.params.identifier || req.body.identifier || req.body.old_trn || req.body.trn || req.body.id || "").trim();
-  const name = String(req.body.name || "").trim();
-  let trnRaw = String(req.body.trn || "").trim();
-  let trnDigits = trnRaw.replace(/\D/g, "");
+  const identifier = String(req.params.identifier || req.body?.identifier || req.body?.old_trn || req.body?.id || "").trim();
+  const name = String(req.body?.name || "").trim();
+  const trn = String(req.body?.trn || "").trim();
 
-  if (!name) {
-    return res.status(400).json({ success: false, error: "Party / Supplier name is required." });
+  if (!identifier) return res.status(400).json({ success: false, error: "Supplier identifier is required." });
+  if (!name) return res.status(400).json({ success: false, error: "Supplier name is required." });
+  if (!/^\d{15}$/.test(trn)) {
+    return res.status(400).json({ success: false, error: "Supplier TRN must contain exactly 15 numeric digits." });
   }
-  if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-  if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
-  const finalTrn = trnDigits || trnRaw;
+
+  const filter = /^\d+$/.test(identifier)
+    ? `id=eq.${encodeURIComponent(identifier)}`
+    : `trn=eq.${encodeURIComponent(identifier)}`;
 
   try {
-    const response = await fetch(`${url}/rest/v1/suppliers?or=(trn.eq.${encodeURIComponent(identifier)},id.eq.${encodeURIComponent(identifier)})`, {
+    const response = await fetch(`${url}/rest/v1/suppliers?${filter}`, {
       method: "PATCH",
       headers: {
         apikey: key,
@@ -1158,17 +918,19 @@ app.put(["/api/suppliers/:identifier", "/api/suppliers"], requireAuth, async (re
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify({ name, trn: finalTrn })
+      body: JSON.stringify({ name, trn })
     });
-
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(500).json({ success: false, error: errText });
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Supplier update rejected by database." });
     }
-    const data = await response.json().catch(() => ([]));
-    return res.json({ success: true, message: `Supplier '${name}' updated successfully.`, supplier: { name, trn: finalTrn }, data });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    const rows = await response.json().catch(() => []);
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(404).json({ success: false, error: "Supplier not found." });
+    }
+    return res.json({ success: true, message: `Supplier '${name}' updated successfully.`, supplier: rows[0] });
+  } catch {
+    return res.status(503).json({ success: false, error: "Supplier service is temporarily unavailable." });
   }
 });
 
@@ -1187,106 +949,104 @@ app.delete(["/api/suppliers/:identifier", "/api/suppliers"], requireOwner, async
   };
 
   try {
-    // Foreign Key / Relational Integrity Check
-    const chkResp = await fetch(`${url}/rest/v1/transactions?select=id&or=(trn.eq.${encodeURIComponent(identifier)},party_name.ilike.${encodeURIComponent("%" + identifier + "%")})`, { headers });
-    if (chkResp.ok) {
+    const lookupFilter = /^\d{15}$/.test(identifier)
+      ? `trn=eq.${encodeURIComponent(identifier)}`
+      : /^\d+$/.test(identifier)
+        ? `id=eq.${encodeURIComponent(identifier)}`
+        : `name=eq.${encodeURIComponent(identifier)}`;
+
+    const supplierResp = await fetch(`${url}/rest/v1/suppliers?select=id,name,trn&${lookupFilter}`, { headers });
+    if (!supplierResp.ok) {
+      return res.status(supplierResp.status).json({ success: false, error: "Unable to locate supplier." });
+    }
+    const suppliers = await supplierResp.json().catch(() => []);
+    if (!Array.isArray(suppliers) || suppliers.length === 0) {
+      return res.status(404).json({ success: false, error: "Supplier not found." });
+    }
+    if (suppliers.length > 1) {
+      return res.status(409).json({ success: false, error: "Supplier identifier is not unique." });
+    }
+
+    const supplier = suppliers[0];
+    const supplierId = String(supplier.id);
+
+    // Prevent deletion when any existing transaction references the exact supplier TRN or party name.
+    const txOr = [];
+    if (supplier.trn) txOr.push(`trn.eq.${encodeURIComponent(String(supplier.trn))}`);
+    if (supplier.name) txOr.push(`party_name.eq.${encodeURIComponent(String(supplier.name))}`);
+
+    if (txOr.length > 0) {
+      const chkResp = await fetch(`${url}/rest/v1/transactions?select=id&or=(${txOr.join(",")})&limit=1`, { headers });
+      if (!chkResp.ok) {
+        return res.status(502).json({ success: false, error: "Unable to verify supplier transaction references." });
+      }
       const chkData = await chkResp.json().catch(() => []);
       if (Array.isArray(chkData) && chkData.length > 0) {
-        return res.status(400).json({
+        return res.status(409).json({
           success: false,
-          error: "Cannot delete supplier. They have existing invoices in the system."
+          error: "Cannot delete supplier because existing invoices reference this supplier."
         });
       }
     }
 
-    let delFilter = "";
-    if (/^\d{15}$/.test(identifier)) {
-      delFilter = `trn=eq.${encodeURIComponent(identifier)}`;
-    } else if (/^\d+$/.test(identifier) && identifier.length < 12) {
-      delFilter = `or=(id.eq.${encodeURIComponent(identifier)},trn.eq.${encodeURIComponent(identifier)})`;
-    } else {
-      delFilter = `or=(name.eq.${encodeURIComponent(identifier)},trn.eq.${encodeURIComponent(identifier)})`;
-    }
-
-    const response = await fetch(`${url}/rest/v1/suppliers?${delFilter}`, {
+    const response = await fetch(`${url}/rest/v1/suppliers?id=eq.${encodeURIComponent(supplierId)}`, {
       method: "DELETE",
       headers: { ...headers, Prefer: "return=representation" }
     });
-
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(400).json({ success: false, error: errText || "Failed to delete supplier" });
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Supplier deletion rejected by database." });
     }
 
-    try {
-      const cfg = readConfigJson();
-      if (!Array.isArray(cfg.deleted_suppliers)) {
-        cfg.deleted_suppliers = [];
-      }
-      if (!cfg.deleted_suppliers.includes(identifier)) {
-        cfg.deleted_suppliers.push(identifier);
-      }
-      writeConfigJson(cfg);
-    } catch (e) {
-      console.warn("Could not save deleted_suppliers to config.json:", e);
+    const deleted = await response.json().catch(() => []);
+    if (!Array.isArray(deleted) || deleted.length !== 1) {
+      return res.status(404).json({ success: false, error: "Supplier was not deleted." });
     }
 
-    return res.json({ success: true, message: `Supplier '${identifier}' deleted successfully.` });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.json({ success: true, message: `Supplier '${supplier.name}' deleted successfully.`, deleted: deleted[0] });
+  } catch {
+    return res.status(503).json({ success: false, error: "Supplier service is temporarily unavailable." });
   }
 });
 
+
 // Helper to fetch all transactions from Supabase bypassing the PostgREST 1,000 max-rows limit via Range pagination
-async function fetchAllSupabaseTransactions(url: string, key: string, order = "transaction_date.desc", select = "*"): Promise<any[]> {
+async function fetchAllSupabaseTransactions(
+  url: string,
+  key: string,
+  order = "transaction_date.desc",
+  select = "*"
+): Promise<any[]> {
   const allRows: any[] = [];
   const batchSize = 1000;
-  let offset = 0;
-  let hasMore = true;
 
-  while (hasMore) {
+  for (let offset = 0; ; offset += batchSize) {
     const end = offset + batchSize - 1;
-    try {
-      const response = await fetch(`${url}/rest/v1/transactions?select=${select}&order=${order}`, {
-        headers: {
-          apikey: key,
-          Authorization: `Bearer ${key}`,
-          Range: `${offset}-${end}`,
-          "Range-Unit": "items"
-        }
-      });
-
-      if (!response.ok) {
-        if (offset === 0) {
-          const fallbackRes = await fetch(`${url}/rest/v1/transactions?select=${select}&order=${order}`, {
-            headers: { apikey: key, Authorization: `Bearer ${key}` }
-          });
-          if (fallbackRes.ok) {
-            const data = await fallbackRes.json();
-            return Array.isArray(data) ? data : [];
-          }
-        }
-        break;
+    const response = await fetch(`${url}/rest/v1/transactions?select=${encodeURIComponent(select)}&order=${encodeURIComponent(order)}`, {
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        Range: `${offset}-${end}`,
+        "Range-Unit": "items"
       }
+    });
 
-      const batch = await response.json();
-      if (Array.isArray(batch) && batch.length > 0) {
-        allRows.push(...batch);
-        if (batch.length < batchSize) {
-          hasMore = false;
-        } else {
-          offset += batchSize;
-        }
-      } else {
-        hasMore = false;
-      }
-    } catch (e) {
-      console.warn("fetchAllSupabaseTransactions pagination error at offset " + offset, e);
-      break;
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      throw new Error(`Supabase transactions query failed (HTTP ${response.status})${errText ? `: ${errText}` : ""}`);
+    }
+
+    const batch = await response.json();
+    if (!Array.isArray(batch)) {
+      throw new Error("Supabase transactions query returned an invalid response.");
+    }
+
+    allRows.push(...batch);
+
+    if (batch.length < batchSize) {
+      return allRows;
     }
   }
-
-  return allRows;
 }
 
 // Top-level Helpers to compute strict 100% all-column fingerprint for exact duplicate identification
@@ -1335,6 +1095,108 @@ function getTransactionStrictFingerprint(tx: any): string {
 }
 
 // 3. Transactions Endpoints
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function normalizeTaxMode(raw: unknown): "inclusive" | "exclusive" | "exempt" {
+  const mode = String(raw ?? "").trim().toLowerCase();
+  if (mode === "inclusive" || mode === "exclusive" || mode === "exempt") return mode;
+  throw new Error("tax_mode must be inclusive, exclusive, or exempt.");
+}
+
+function parsePositiveAmount(raw: unknown): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("Amount must be a valid number greater than 0.00.");
+  }
+  return value;
+}
+
+/**
+ * Server-authoritative VAT calculation.
+ * For new entries amount_input is the only trusted monetary input.
+ * For edits, amount_input may be omitted and is derived from the selected tax mode.
+ */
+function calculateAuthoritativeTax(input: Record<string, any>, allowDerivedInput = false) {
+  const taxMode = normalizeTaxMode(input.tax_mode);
+
+  let inputAmount: number;
+  if (input.amount_input !== undefined && input.amount_input !== null && input.amount_input !== "") {
+    inputAmount = parsePositiveAmount(input.amount_input);
+  } else if (allowDerivedInput) {
+    if (taxMode === "inclusive") {
+      inputAmount = parsePositiveAmount(input.amount_with_tax);
+    } else {
+      inputAmount = parsePositiveAmount(input.amount_before_tax);
+    }
+  } else {
+    throw new Error("amount_input is required.");
+  }
+
+  if (taxMode === "inclusive") {
+    const amountBeforeTax = roundMoney(inputAmount / 1.05);
+    const vatAmount = roundMoney(inputAmount - amountBeforeTax);
+    return {
+      amount_input: inputAmount,
+      amount_before_tax: amountBeforeTax,
+      vat_rate: 0.05,
+      vat_amount: vatAmount,
+      amount_with_tax: inputAmount,
+      tax_mode: "inclusive" as const
+    };
+  }
+
+  if (taxMode === "exclusive") {
+    const amountBeforeTax = inputAmount;
+    const vatAmount = roundMoney(amountBeforeTax * 0.05);
+    const amountWithTax = roundMoney(amountBeforeTax + vatAmount);
+    return {
+      amount_input: inputAmount,
+      amount_before_tax: amountBeforeTax,
+      vat_rate: 0.05,
+      vat_amount: vatAmount,
+      amount_with_tax: amountWithTax,
+      tax_mode: "exclusive" as const
+    };
+  }
+
+  return {
+    amount_input: inputAmount,
+    amount_before_tax: inputAmount,
+    vat_rate: 0.0,
+    vat_amount: 0.0,
+    amount_with_tax: inputAmount,
+    tax_mode: "exempt" as const
+  };
+}
+
+async function transactionExists(url: string, key: string, tx: {
+  transaction_type: string;
+  transaction_date: string;
+  invoice_no: string;
+  trn: string;
+}): Promise<boolean> {
+  const params = new URLSearchParams({
+    select: "id",
+    transaction_type: `eq.${tx.transaction_type}`,
+    transaction_date: `eq.${tx.transaction_date}`,
+    invoice_no: `eq.${tx.invoice_no}`,
+    trn: `eq.${tx.trn}`,
+    limit: "1"
+  });
+  const response = await fetch(`${url}/rest/v1/transactions?${params.toString()}`, {
+    headers: { apikey: key, Authorization: `Bearer ${key}` }
+  });
+  if (!response.ok) {
+    const errText = await response.text().catch(() => "");
+    throw new Error(`Duplicate check failed (HTTP ${response.status})${errText ? `: ${errText}` : ""}`);
+  }
+  const data = await response.json();
+  return Array.isArray(data) && data.length > 0;
+}
+
+
 // Read Transactions: Owner Only (Clerks use blind data entry) - Fully paginated with database filtering & sorting (CQ-04)
 app.get("/api/transactions", requireOwner, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
@@ -1426,96 +1288,70 @@ app.post("/api/transactions", requireAuth, async (req: Request, res: Response) =
   const rawBody = req.body;
   const items = Array.isArray(rawBody) ? rawBody : [rawBody];
 
-  if (items.length === 0) {
-    return res.status(400).json({ error: "Empty transaction list" });
-  }
-
-  // Sanitize transaction payloads for Supabase schema
-  const cleanedItems = items.map((item: any) => {
-    let trnRaw = String(item.trn || "").trim();
-    let trnDigits = trnRaw.replace(/\D/g, "");
-    if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-    if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
-
-    // Check for tax-exempt status or zero VAT
-    const isExempt = item.tax_mode === "exempt" || item.is_exempt === true || (item.vat_amount !== undefined && item.vat_amount !== null && Number(item.vat_amount) === 0);
-
-    let amountWithTax = Number(item.amount_with_tax || item.total_amount || 0);
-    let amountBeforeTax = Number(item.amount_before_tax || 0);
-    let vatAmount = Number(item.vat_amount || 0);
-    let vatRate = 0.05;
-    let taxMode = item.tax_mode || "exclusive";
-
-    if (isExempt) {
-      vatAmount = 0;
-      vatRate = 0;
-      taxMode = "exempt";
-      if (amountBeforeTax > 0) {
-        amountWithTax = amountWithTax > 0 ? amountWithTax : amountBeforeTax;
-      } else if (amountWithTax > 0) {
-        amountBeforeTax = amountWithTax;
-      }
-    } else {
-      if (amountWithTax > 0 && amountBeforeTax === 0) {
-        amountBeforeTax = Math.round((amountWithTax / 1.05) * 100) / 100;
-        vatAmount = Math.round((amountWithTax - amountBeforeTax) * 100) / 100;
-      } else if (amountBeforeTax > 0 && amountWithTax === 0) {
-        vatAmount = Math.round((amountBeforeTax * 0.05) * 100) / 100;
-        amountWithTax = Math.round((amountBeforeTax + vatAmount) * 100) / 100;
-      }
-    }
-
-    let txDate = String(item.transaction_date || "").split("T")[0];
-    if (!txDate || !/^\d{4}-\d{2}-\d{2}$/.test(txDate)) {
-      txDate = getUAECurrentDate();
-    }
-
-    const partyNameRaw = String(item.party_name || "").trim();
-    const partyNameLower = partyNameRaw.toLowerCase();
-    const rawTypeLower = String(item.transaction_type || "").trim().toLowerCase();
-    const invNoLower = String(item.invoice_no || "").trim().toLowerCase();
-
-    let txType = normalizeTransactionType(item.transaction_type);
-
-    const invNo = item.invoice_no !== undefined && item.invoice_no !== null ? String(item.invoice_no).trim() : "";
-
-    return {
-      transaction_type: txType,
-      transaction_date: txDate,
-      invoice_no: invNo,
-      party_name: String(item.party_name || "UNKNOWN_PARTY").trim(),
-      trn: trnDigits || trnRaw || "000000000000000",
-      amount_before_tax: amountBeforeTax,
-      vat_rate: vatRate,
-      vat_amount: vatAmount,
-      amount_with_tax: amountWithTax,
-      tax_mode: taxMode
-    };
-  });
-
-  // Guard against duplicate insertions (both existing DB rows and duplicates inside request batch)
-  let itemsToInsert = cleanedItems;
-  try {
-    const existingList = await fetchAllSupabaseTransactions(url, key, "created_at.asc", "*");
-    const seenFingerprints = new Set(existingList.map(ex => getTransactionStrictFingerprint(ex)));
-    itemsToInsert = [];
-    for (const it of cleanedItems) {
-      const fp = getTransactionStrictFingerprint(it);
-      if (!seenFingerprints.has(fp)) {
-        seenFingerprints.add(fp);
-        itemsToInsert.push(it);
-      }
-    }
-  } catch (dupCheckErr) {
-    console.warn("Direct insert duplicate pre-check skipped:", dupCheckErr);
-  }
-
-  if (itemsToInsert.length === 0) {
-    // If all submitted items were already in database, return success with existing records representation
-    return res.status(200).json({ message: "Duplicate records detected and skipped", inserted: 0, items: [] });
+  if (items.length === 0 || items.length > 50) {
+    return res.status(400).json({ success: false, error: "Request must contain between 1 and 50 transactions." });
   }
 
   try {
+    const prepared: any[] = [];
+
+    for (const item of items) {
+      const transactionType = String(item?.transaction_type || "").trim().toLowerCase();
+      if (transactionType !== "sales" && transactionType !== "purchases") {
+        return res.status(400).json({ success: false, error: "transaction_type must be sales or purchases." });
+      }
+
+      const transactionDate = String(item?.transaction_date || "").split("T")[0];
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(transactionDate)) {
+        return res.status(400).json({ success: false, error: "transaction_date must be YYYY-MM-DD." });
+      }
+
+      const invoiceNo = item?.invoice_no == null ? "" : String(item.invoice_no).trim();
+      let partyName = String(item?.party_name || "").trim();
+      let trn = String(item?.trn || "").trim().replace(/\D/g, "");
+
+      if (transactionType === "sales") {
+        partyName = "Cash Customer";
+        trn = "000000000000000";
+      } else {
+        if (!partyName) {
+          return res.status(400).json({ success: false, error: "Supplier / party name is required for purchases." });
+        }
+        if (!/^\d{15}$/.test(trn)) {
+          return res.status(400).json({ success: false, error: "TRN must contain exactly 15 numeric digits for purchases." });
+        }
+      }
+
+      const tax = calculateAuthoritativeTax(item, false);
+
+      const row = {
+        transaction_type: transactionType,
+        transaction_date: transactionDate,
+        invoice_no: invoiceNo,
+        party_name: partyName,
+        trn,
+        amount_before_tax: tax.amount_before_tax,
+        vat_rate: tax.vat_rate,
+        vat_amount: tax.vat_amount,
+        amount_with_tax: tax.amount_with_tax,
+        tax_mode: tax.tax_mode
+      };
+
+      if (await transactionExists(url, key, {
+        transaction_type: row.transaction_type,
+        transaction_date: row.transaction_date,
+        invoice_no: row.invoice_no,
+        trn: row.trn
+      })) {
+        return res.status(409).json({
+          success: false,
+          error: "Duplicate transaction detected for the same transaction type, invoice number, TRN, and transaction date."
+        });
+      }
+
+      prepared.push(row);
+    }
+
     const response = await fetch(`${url}/rest/v1/transactions`, {
       method: "POST",
       headers: {
@@ -1524,96 +1360,73 @@ app.post("/api/transactions", requireAuth, async (req: Request, res: Response) =
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify(itemsToInsert)
+      body: JSON.stringify(prepared)
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      console.error("[SERVER] Supabase insert error:", errText);
-      return res.status(response.status).json({ error: errText });
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Transaction insert rejected by database." });
     }
 
     const data = await response.json();
-    res.status(201).json(data);
+    return res.status(201).json(data);
   } catch (err: any) {
     console.error("[SERVER] Transaction insert exception:", err);
-    res.status(500).json({ error: err.message });
+    const message = err?.message || "Transaction insert failed.";
+    return res.status(message.includes("Duplicate check failed") ? 503 : 400).json({
+      success: false,
+      error: message
+    });
   }
 });
 
-// 3.1 Update Transaction (PUT /api/transactions/:id or /api/transactions - Owner Only)
+// 3.1 Update Transaction// 3.1 Update Transaction (PUT /api/transactions/:id or /api/transactions - Owner Only)
 app.put(["/api/transactions/:id", "/api/transactions"], requireOwner, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const txId = req.params.id || req.body.id;
+  const txId = String(req.params.id || req.body?.id || "").trim();
 
-  if (!txId) {
-    return res.status(400).json({ success: false, error: "Transaction ID is required for update" });
+  if (!txId || !/^\d+$/.test(txId)) {
+    return res.status(400).json({ success: false, error: "A valid numeric transaction ID is required for update." });
   }
 
   try {
-    let trnRaw = String(req.body.trn || "").trim();
-    let trnDigits = trnRaw.replace(/\D/g, "");
-    if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-    if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
+    const transactionType = String(req.body?.transaction_type || "").trim().toLowerCase();
+    if (transactionType !== "sales" && transactionType !== "purchases") {
+      return res.status(400).json({ success: false, error: "transaction_type must be sales or purchases." });
+    }
 
-    // Check if record is marked as tax-exempt or has zero VAT
-    const isExempt = req.body.tax_mode === "exempt" || req.body.is_exempt === true || (req.body.vat_amount !== undefined && req.body.vat_amount !== null && Number(req.body.vat_amount) === 0);
+    const transactionDate = String(req.body?.transaction_date || "").split("T")[0];
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(transactionDate)) {
+      return res.status(400).json({ success: false, error: "transaction_date must be YYYY-MM-DD." });
+    }
 
-    let amountWithTax = Number(req.body.amount_with_tax ?? 0);
-    let amountBeforeTax = Number(req.body.amount_before_tax ?? 0);
-    let vatAmount = 0;
-    let vatRate = 0.05;
-    let taxMode = req.body.tax_mode || "inclusive";
+    const invoiceNo = req.body?.invoice_no == null ? "" : String(req.body.invoice_no).trim();
+    let partyName = String(req.body?.party_name || "").trim();
+    let trn = String(req.body?.trn || "").trim().replace(/\D/g, "");
 
-    if (isExempt) {
-      vatAmount = 0;
-      vatRate = 0;
-      taxMode = "exempt";
-      if (amountBeforeTax > 0) {
-        amountWithTax = amountWithTax > 0 ? amountWithTax : amountBeforeTax;
-      } else if (amountWithTax > 0) {
-        amountBeforeTax = amountWithTax;
-      }
+    if (transactionType === "sales") {
+      partyName = "Cash Customer";
+      trn = "000000000000000";
     } else {
-      if (amountWithTax > 0 && amountBeforeTax === 0) {
-        amountBeforeTax = Math.round((amountWithTax / 1.05) * 100) / 100;
-        vatAmount = Math.round((amountWithTax - amountBeforeTax) * 100) / 100;
-      } else if (amountBeforeTax > 0 && amountWithTax === 0) {
-        vatAmount = Math.round((amountBeforeTax * 0.05) * 100) / 100;
-        amountWithTax = Math.round((amountBeforeTax + vatAmount) * 100) / 100;
-      } else if (req.body.vat_amount !== undefined && Number(req.body.vat_amount) > 0) {
-        vatAmount = Number(req.body.vat_amount);
-      } else if (amountWithTax > 0 && amountBeforeTax > 0) {
-        vatAmount = Math.round((amountWithTax - amountBeforeTax) * 100) / 100;
-      }
+      if (!partyName) return res.status(400).json({ success: false, error: "Supplier / party name is required for purchases." });
+      if (!/^\d{15}$/.test(trn)) return res.status(400).json({ success: false, error: "TRN must contain exactly 15 numeric digits for purchases." });
     }
 
-    let txDate = String(req.body.transaction_date || "").split("T")[0];
-    if (!txDate || !/^\d{4}-\d{2}-\d{2}$/.test(txDate)) {
-      txDate = getUAECurrentDate();
-    }
-
-    let txType = String(req.body.transaction_type || "purchases").toLowerCase().trim();
-    if (txType !== "sales" && txType !== "purchases") {
-      txType = "purchases";
-    }
-
-    const invNo = req.body.invoice_no !== undefined && req.body.invoice_no !== null ? String(req.body.invoice_no).trim() : "";
-
+    const tax = calculateAuthoritativeTax(req.body || {}, true);
     const payload = {
-      transaction_type: txType,
-      transaction_date: txDate,
-      invoice_no: invNo,
-      party_name: String(req.body.party_name || "UNKNOWN_PARTY").trim(),
-      trn: trnDigits || trnRaw,
-      amount_before_tax: amountBeforeTax,
-      vat_rate: vatRate,
-      vat_amount: vatAmount,
-      amount_with_tax: amountWithTax,
-      tax_mode: taxMode
+      transaction_type: transactionType,
+      transaction_date: transactionDate,
+      invoice_no: invoiceNo,
+      party_name: partyName,
+      trn,
+      amount_before_tax: tax.amount_before_tax,
+      vat_rate: tax.vat_rate,
+      vat_amount: tax.vat_amount,
+      amount_with_tax: tax.amount_with_tax,
+      tax_mode: tax.tax_mode
     };
 
-    const response = await fetch(`${url}/rest/v1/transactions?id=eq.${txId}`, {
+    const response = await fetch(`${url}/rest/v1/transactions?id=eq.${encodeURIComponent(txId)}`, {
       method: "PATCH",
       headers: {
         apikey: key,
@@ -1625,247 +1438,71 @@ app.put(["/api/transactions/:id", "/api/transactions"], requireOwner, async (req
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ success: false, error: errText });
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Transaction update rejected by database." });
     }
 
-    const data = await response.json();
-    res.json({ success: true, data: Array.isArray(data) ? data[0] : data, recalculated: payload });
+    const data = await response.json().catch(() => []);
+    if (!Array.isArray(data) || data.length === 0) {
+      return res.status(404).json({ success: false, error: "Transaction not found." });
+    }
+
+    return res.json({ success: true, data: data[0], recalculated: payload });
   } catch (err: any) {
     console.error("[SERVER] Update transaction exception:", err);
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(400).json({ success: false, error: err?.message || "Transaction update failed." });
   }
 });
 
 // 3.2 Delete Transaction (DELETE /api/transactions/:id or /api/transactions - Owner Only)
 app.delete(["/api/transactions/:id", "/api/transactions"], requireOwner, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const txId = req.params.id || req.body?.id || req.query?.id;
-  const invoiceNo = req.body?.invoice_no || req.query?.invoice_no;
+  const rawId = String(req.params.id || req.body?.id || req.query?.id || "").trim();
 
-  if (!txId && !invoiceNo) {
-    return res.status(400).json({ success: false, error: "Transaction ID or Invoice Number is required for delete" });
+  if (!/^\d+$/.test(rawId)) {
+    return res.status(400).json({
+      success: false,
+      error: "A numeric transaction ID is required for deletion. Invoice number deletion is disabled for data safety."
+    });
   }
 
   try {
-    let deletedRows: any[] = [];
-    let lastError = "";
-
-    // 1. If txId is provided, try delete by 'id'
-    if (txId && txId !== "undefined" && txId !== "null") {
-      try {
-        const resp = await fetch(`${url}/rest/v1/transactions?id=eq.${encodeURIComponent(txId)}`, {
-          method: "DELETE",
-          headers: {
-            apikey: key,
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-            Prefer: "return=representation"
-          }
-        });
-        if (resp.ok) {
-          deletedRows = await resp.json().catch(() => []);
-          if (Array.isArray(deletedRows) && deletedRows.length > 0) {
-            return res.json({ success: true, id: txId, deleted: deletedRows });
-          }
-        } else {
-          lastError = await resp.text().catch(() => "");
-        }
-      } catch (e: any) {
-        lastError = e.message;
+    const response = await fetch(`${url}/rest/v1/transactions?id=eq.${encodeURIComponent(rawId)}`, {
+      method: "DELETE",
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        Prefer: "return=representation"
       }
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Transaction deletion rejected by database." });
     }
 
-    // 2. If not deleted yet, try delete by 'invoice_no'
-    const invTarget = invoiceNo || txId;
-    if (invTarget && invTarget !== "undefined" && invTarget !== "null") {
-      try {
-        const respInv = await fetch(`${url}/rest/v1/transactions?invoice_no=eq.${encodeURIComponent(invTarget)}`, {
-          method: "DELETE",
-          headers: {
-            apikey: key,
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-            Prefer: "return=representation"
-          }
-        });
-        if (respInv.ok) {
-          deletedRows = await respInv.json().catch(() => []);
-          return res.json({ success: true, id: invTarget, deleted: deletedRows });
-        } else {
-          const invErr = await respInv.text().catch(() => "");
-          lastError = invErr || lastError;
-        }
-      } catch (e: any) {
-        lastError = e.message || lastError;
-      }
+    const deletedRows = await response.json().catch(() => []);
+    if (!Array.isArray(deletedRows) || deletedRows.length !== 1) {
+      return res.status(404).json({ success: false, error: "Transaction not found." });
     }
 
-    if (deletedRows.length === 0 && lastError) {
-      return res.status(400).json({ success: false, error: lastError });
-    }
-
-    res.json({ success: true, id: txId || invoiceNo, deleted: deletedRows });
-  } catch (err: any) {
-    console.error("[SERVER] Delete transaction exception:", err);
-    res.status(500).json({ success: false, error: err.message });
+    auditLog(String((req as any).user?.username || "unknown"), "DELETE_TRANSACTION", rawId, "SUCCESS");
+    return res.json({ success: true, id: rawId, deleted: deletedRows });
+  } catch {
+    return res.status(503).json({ success: false, error: "Transaction service is temporarily unavailable." });
   }
 });
 
 // 3.3 Danger Zone: Destructive Actions Suite Endpoint (POST Method - Owner Only)
 app.post("/api/settings/reset_data", resetDataLimiter, requireOwner, async (req: Request, res: Response) => {
-  const { url, key } = getSupabaseConfig();
-  const actor = (req as any).user?.username || "Owner";
-  const actionType = String(
-    req.body?.action_type || req.body?.transaction_type || req.body?.type_to_reset || ""
-  ).toLowerCase().trim();
-  const confirmPhrase = String(req.body?.confirm_phrase || req.body?.confirmText || "").trim();
-
-  try {
-    const headers = {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-      Prefer: "return=representation"
-    };
-
-    if (actionType === "sales" || actionType === "reset_sales") {
-      if (confirmPhrase !== "DELETE ALL SALES") {
-        auditLog(actor, "DANGER_ZONE_RESET_REJECTED", "sales", "FAILURE", { reason: "Invalid confirmation phrase" });
-        return res.status(400).json({
-          success: false,
-          error: "Confirmation failed: You must type 'DELETE ALL SALES' to reset sales transactions."
-        });
-      }
-      const response = await fetch(`${url}/rest/v1/transactions?transaction_type=eq.sales`, { method: "DELETE", headers });
-      if (!response.ok) {
-        const errText = await response.text();
-        return res.status(500).json({ success: false, error: errText || `HTTP ${response.status} from Supabase` });
-      }
-      const data = await response.json().catch(() => []);
-      const deletedCount = Array.isArray(data) ? data.length : 0;
-      auditLog(actor, "DANGER_ZONE_RESET", "sales", "SUCCESS", { actionType: "sales", deleted_count: deletedCount });
-      return res.json({ success: true, action_type: "sales", deleted_count: deletedCount, message: "Successfully deleted all SALES transactions." });
-    }
-
-    if (actionType === "purchases" || actionType === "reset_purchases") {
-      if (confirmPhrase !== "DELETE ALL PURCHASES") {
-        auditLog(actor, "DANGER_ZONE_RESET_REJECTED", "purchases", "FAILURE", { reason: "Invalid confirmation phrase" });
-        return res.status(400).json({
-          success: false,
-          error: "Confirmation failed: You must type 'DELETE ALL PURCHASES' to reset purchase transactions."
-        });
-      }
-      const response = await fetch(`${url}/rest/v1/transactions?transaction_type=eq.purchases`, { method: "DELETE", headers });
-      if (!response.ok) {
-        const errText = await response.text();
-        return res.status(500).json({ success: false, error: errText || `HTTP ${response.status} from Supabase` });
-      }
-      const data = await response.json().catch(() => []);
-      const deletedCount = Array.isArray(data) ? data.length : 0;
-      auditLog(actor, "DANGER_ZONE_RESET", "purchases", "SUCCESS", { actionType: "purchases", deleted_count: deletedCount });
-      return res.json({ success: true, action_type: "purchases", deleted_count: deletedCount, message: "Successfully deleted all PURCHASES transactions." });
-    }
-
-    if (actionType === "single_supplier" || actionType === "delete_single_supplier") {
-      const supplierIdOrTrn = String(req.body?.supplier_identifier || req.body?.trn || req.body?.id || "").trim();
-      if (!supplierIdOrTrn) {
-        return res.status(400).json({ success: false, error: "Missing supplier identifier (TRN or ID)." });
-      }
-
-      // Foreign Key / Relational Integrity Check
-      const chkResp = await fetch(`${url}/rest/v1/transactions?select=id&trn=eq.${encodeURIComponent(supplierIdOrTrn)}`, { headers });
-      if (chkResp.ok) {
-        const chkData = await chkResp.json().catch(() => []);
-        if (Array.isArray(chkData) && chkData.length > 0) {
-          return res.status(500).json({
-            success: false,
-            error: `Foreign Key / Relational Integrity Violation: Supplier '${supplierIdOrTrn}' has ${chkData.length} existing transactions. Delete those transactions first.`
-          });
-        }
-      }
-
-      let delFilter = "";
-      if (/^\d{15}$/.test(supplierIdOrTrn)) {
-        delFilter = `trn=eq.${encodeURIComponent(supplierIdOrTrn)}`;
-      } else if (/^\d+$/.test(supplierIdOrTrn) && supplierIdOrTrn.length < 12) {
-        delFilter = `or=(id.eq.${encodeURIComponent(supplierIdOrTrn)},trn.eq.${encodeURIComponent(supplierIdOrTrn)})`;
-      } else {
-        delFilter = `or=(name.eq.${encodeURIComponent(supplierIdOrTrn)},trn.eq.${encodeURIComponent(supplierIdOrTrn)})`;
-      }
-
-      const response = await fetch(`${url}/rest/v1/suppliers?${delFilter}`, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
-      if (!response.ok) {
-        const errText = await response.text();
-        return res.status(500).json({ success: false, error: errText || `HTTP ${response.status} from Supabase` });
-      }
-      const data = await response.json().catch(() => []);
-      return res.json({ success: true, action_type: "single_supplier", deleted_count: Array.isArray(data) ? data.length : 0, message: `Supplier '${supplierIdOrTrn}' deleted successfully.` });
-    }
-
-    if (actionType === "all_suppliers" || actionType === "reset_suppliers") {
-      const chkResp = await fetch(`${url}/rest/v1/transactions?select=id&limit=1`, { headers });
-      if (chkResp.ok) {
-        const chkData = await chkResp.json().catch(() => []);
-        if (Array.isArray(chkData) && chkData.length > 0) {
-          return res.status(500).json({
-            success: false,
-            error: "Relational Constraint Violation: Cannot delete all suppliers while transaction records exist. Run Factory Reset or clear transactions first."
-          });
-        }
-      }
-
-      const response = await fetch(`${url}/rest/v1/suppliers?trn=not.is.null`, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
-      if (!response.ok) {
-        const errText = await response.text();
-        return res.status(500).json({ success: false, error: errText || `HTTP ${response.status} from Supabase` });
-      }
-      const data = await response.json().catch(() => []);
-      return res.json({ success: true, action_type: "all_suppliers", deleted_count: Array.isArray(data) ? data.length : 0, message: "Successfully deleted all registered suppliers." });
-    }
-
-    if (actionType === "factory_reset" || actionType === "wipe_database" || actionType === "reset_all") {
-      if (confirmPhrase !== "WIPE ENTIRE DATABASE") {
-        auditLog(actor, "DANGER_ZONE_RESET_REJECTED", "factory_reset", "FAILURE", { reason: "Invalid confirmation phrase" });
-        return res.status(400).json({
-          success: false,
-          error: "Confirmation failed: You must type 'WIPE ENTIRE DATABASE' to perform factory reset."
-        });
-      }
-      // 1. Delete transactions first
-      const txResp = await fetch(`${url}/rest/v1/transactions?id=neq.0`, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
-      if (!txResp.ok) {
-        const errText = await txResp.text();
-        return res.status(500).json({ success: false, error: `Failed to wipe transactions: ${errText}` });
-      }
-      const txData = await txResp.json().catch(() => []);
-
-      // 2. Delete suppliers
-      const supResp = await fetch(`${url}/rest/v1/suppliers?trn=not.is.null`, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
-      if (!supResp.ok) {
-        const errText = await supResp.text();
-        return res.status(500).json({ success: false, error: `Failed to wipe suppliers: ${errText}` });
-      }
-      const supData = await supResp.json().catch(() => []);
-
-      return res.json({
-        success: true,
-        action_type: "factory_reset",
-        transactions_deleted: Array.isArray(txData) ? txData.length : 0,
-        suppliers_deleted: Array.isArray(supData) ? supData.length : 0,
-        message: "Factory Reset Complete! Database completely wiped."
-      });
-    }
-
-    return res.status(400).json({
-      success: false,
-      error: `Invalid action_type: '${actionType}'. Supported actions: 'sales', 'purchases', 'single_supplier', 'all_suppliers', or 'factory_reset'.`
-    });
-
-  } catch (err: any) {
-    console.error(`[SERVER] Exception in reset_data (${actionType}):`, err);
-    return res.status(500).json({ success: false, error: err.message || String(err) });
-  }
+  const actor = String((req as any).user?.username || "unknown");
+  auditLog(actor, "DANGER_ZONE_RESET_BLOCKED", "production_database", "FAILURE", {
+    reason: "Destructive database reset is permanently disabled."
+  });
+  return res.status(403).json({
+    success: false,
+    error: "Destructive database reset is permanently disabled in this application."
+  });
 });
 
 // Helper to safely clean numeric values from CSV imports without NaN
@@ -1890,184 +1527,135 @@ function parseImportDecimal(val: any): number {
 // 4. Batch CSV Import Endpoint for Transactions (Owner Only - Rate Limited)
 app.post("/api/import/transactions", importLimiter, requireOwner, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const { rows, forced_type } = req.body; // Array of row objects from CSV and optional forced_type
+  const { rows, forced_type } = req.body || {};
 
-  if (!rows || !Array.isArray(rows)) {
-    return res.status(400).json({ success: false, error: "Invalid payload, 'rows' array expected" });
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > 5000) {
+    return res.status(400).json({
+      success: false,
+      error: "rows must be a non-empty array containing no more than 5,000 records."
+    });
   }
 
-  const cleanedRows = rows.map((r: any) => {
-    let trnRaw = String(r.trn || "").trim();
-    let trnDigits = trnRaw.replace(/\D/g, "");
-    if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-    if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
+  const preparedRows: any[] = [];
+  const validationErrors: Array<{ row: number; error: string }> = [];
 
-    let rawBefore = (r.amount_before_tax !== undefined && r.amount_before_tax !== null && r.amount_before_tax !== "") 
-      ? parseImportDecimal(r.amount_before_tax) 
-      : null;
-    let rawVat = (r.vat_amount !== undefined && r.vat_amount !== null && r.vat_amount !== "") 
-      ? parseImportDecimal(r.vat_amount) 
-      : null;
-    let rawWith = (r.amount_with_tax !== undefined && r.amount_with_tax !== null && r.amount_with_tax !== "") 
-      ? parseImportDecimal(r.amount_with_tax) 
-      : ((r.total_amount !== undefined && r.total_amount !== null && r.total_amount !== "") ? parseImportDecimal(r.total_amount) : null);
+  for (let index = 0; index < rows.length; index++) {
+    const r = rows[index] || {};
+    try {
+      const transactionType = forced_type
+        ? String(normalizeTransactionType(forced_type))
+        : String(normalizeTransactionType(r.transaction_type));
 
-    let rawTaxMode = String(r.tax_mode || "").toLowerCase().trim();
-    let isExempt = false;
-    if (rawTaxMode === "exempt" || r.is_exempt === true || rawTaxMode.includes("exempt") || rawTaxMode.includes("zero") || rawTaxMode.includes("0%") || rawTaxMode.includes("مستثن") || rawTaxMode.includes("اعفاء") || rawTaxMode.includes("إعفاء")) {
-      isExempt = true;
-    } else if (rawVat !== null && rawVat === 0) {
-      isExempt = true;
-    } else if (rawBefore !== null && rawWith !== null && rawBefore > 0 && Math.abs(rawBefore - rawWith) < 0.001) {
-      isExempt = true;
-    }
-
-    let amountBeforeTax = 0.0;
-    let vatAmount = 0.0;
-    let amountWithTax = 0.0;
-    let vatRate = 0.05;
-    let taxMode = r.tax_mode || "inclusive";
-
-    if (isExempt) {
-      vatAmount = 0.0;
-      vatRate = 0.0;
-      taxMode = "exempt";
-      if (rawBefore !== null && rawBefore > 0) {
-        amountBeforeTax = rawBefore;
-        amountWithTax = (rawWith !== null && rawWith > 0) ? rawWith : rawBefore;
-      } else if (rawWith !== null && rawWith > 0) {
-        amountWithTax = rawWith;
-        amountBeforeTax = rawWith;
+      const transactionDate = String(r.transaction_date || "").split("T")[0];
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(transactionDate)) {
+        throw new Error("transaction_date must be YYYY-MM-DD.");
       }
-    } else {
-      // PRESERVE VALUES AS-IS FROM EXTERNAL FILE WITHOUT UNWANTED RECALCULATION
-      if (rawBefore !== null && rawVat !== null && rawWith !== null) {
-        amountBeforeTax = rawBefore;
-        vatAmount = rawVat;
-        amountWithTax = rawWith;
-        vatRate = 0.05;
-      } else if (rawBefore !== null && rawVat !== null) {
-        amountBeforeTax = rawBefore;
-        vatAmount = rawVat;
-        amountWithTax = Math.round((amountBeforeTax + vatAmount) * 100) / 100;
-        vatRate = 0.05;
-      } else if (rawWith !== null && rawVat !== null) {
-        amountWithTax = rawWith;
-        vatAmount = rawVat;
-        amountBeforeTax = Math.round((amountWithTax - vatAmount) * 100) / 100;
-        vatRate = 0.05;
-      } else if (rawWith !== null && rawBefore !== null) {
-        amountWithTax = rawWith;
-        amountBeforeTax = rawBefore;
-        vatAmount = Math.round((amountWithTax - amountBeforeTax) * 100) / 100;
-        vatRate = 0.05;
-      } else if (rawWith !== null && rawWith > 0) {
-        amountWithTax = rawWith;
-        amountBeforeTax = Math.round((amountWithTax / 1.05) * 100) / 100;
-        vatAmount = Math.round((amountWithTax - amountBeforeTax) * 100) / 100;
-        vatRate = 0.05;
-      } else if (rawBefore !== null && rawBefore > 0) {
-        amountBeforeTax = rawBefore;
-        vatAmount = Math.round((amountBeforeTax * 0.05) * 100) / 100;
-        amountWithTax = Math.round((amountBeforeTax + vatAmount) * 100) / 100;
-        vatRate = 0.05;
+
+      let partyName = String(r.party_name || "").trim();
+      let trn = String(r.trn || "").trim().replace(/\D/g, "");
+      if (transactionType === "sales") {
+        partyName = "Cash Customer";
+        trn = "000000000000000";
+      } else {
+        if (!partyName) throw new Error("Supplier / party name is required.");
+        if (!/^\d{15}$/.test(trn)) throw new Error("Purchase TRN must contain exactly 15 digits.");
       }
+
+      const taxMode = normalizeTaxMode(r.tax_mode || "inclusive");
+      const sourceAmount =
+        taxMode === "inclusive"
+          ? (r.amount_input ?? r.amount_with_tax ?? r.total_amount ?? r.amount)
+          : (r.amount_input ?? r.amount_before_tax ?? r.amount);
+
+      const tax = calculateAuthoritativeTax(
+        { tax_mode: taxMode, amount_input: sourceAmount },
+        false
+      );
+
+      const providedBefore = r.amount_before_tax !== undefined && r.amount_before_tax !== null && r.amount_before_tax !== ""
+        ? parseImportDecimal(r.amount_before_tax) : null;
+      const providedVat = r.vat_amount !== undefined && r.vat_amount !== null && r.vat_amount !== ""
+        ? parseImportDecimal(r.vat_amount) : null;
+      const providedTotal = r.amount_with_tax !== undefined && r.amount_with_tax !== null && r.amount_with_tax !== ""
+        ? parseImportDecimal(r.amount_with_tax) : null;
+
+      if (providedBefore !== null && Math.abs(providedBefore - tax.amount_before_tax) > 0.01) {
+        throw new Error("amount_before_tax does not match the selected tax mode.");
+      }
+      if (providedVat !== null && Math.abs(providedVat - tax.vat_amount) > 0.01) {
+        throw new Error("vat_amount does not match the selected tax mode.");
+      }
+      if (providedTotal !== null && Math.abs(providedTotal - tax.amount_with_tax) > 0.01) {
+        throw new Error("amount_with_tax does not match the selected tax mode.");
+      }
+
+      preparedRows.push({
+        transaction_type: transactionType,
+        transaction_date: transactionDate,
+        invoice_no: r.invoice_no == null ? "" : String(r.invoice_no).trim(),
+        party_name: partyName,
+        trn,
+        amount_before_tax: tax.amount_before_tax,
+        vat_rate: tax.vat_rate,
+        vat_amount: tax.vat_amount,
+        amount_with_tax: tax.amount_with_tax,
+        tax_mode: tax.tax_mode
+      });
+    } catch (err: any) {
+      validationErrors.push({ row: index + 1, error: err?.message || "Invalid row." });
     }
+  }
 
-    let txDate = String(r.transaction_date || "").split("T")[0];
-    if (!txDate || !/^\d{4}-\d{2}-\d{2}$/.test(txDate)) {
-      txDate = getUAECurrentDate();
-    }
+  if (validationErrors.length > 0) {
+    return res.status(422).json({
+      success: false,
+      inserted: 0,
+      errors: validationErrors,
+      message: "Import rejected. No records were sent to the database because one or more rows failed validation."
+    });
+  }
 
-    const partyNameRaw = String(r.party_name || "").trim();
-    const partyNameLower = partyNameRaw.toLowerCase();
-    const rawTypeLower = String(r.transaction_type || "").trim().toLowerCase();
-    const invNoLower = String(r.invoice_no || "").trim().toLowerCase();
-
-    let txType = forced_type ? normalizeTransactionType(forced_type) : normalizeTransactionType(r.transaction_type);
-    const invNo = r.invoice_no !== undefined && r.invoice_no !== null ? String(r.invoice_no).trim() : "";
-
-    return {
-      transaction_type: txType,
-      transaction_date: txDate,
-      invoice_no: invNo,
-      party_name: String(r.party_name || "UNKNOWN_PARTY").trim(),
-      trn: trnDigits || trnRaw || "000000000000000",
-      amount_before_tax: isNaN(amountBeforeTax) ? 0.0 : amountBeforeTax,
-      vat_rate: isNaN(vatRate) ? 0.05 : vatRate,
-      vat_amount: isNaN(vatAmount) ? 0.0 : vatAmount,
-      amount_with_tax: isNaN(amountWithTax) ? 0.0 : amountWithTax,
-      tax_mode: taxMode
-    };
-  });
-
-  // Check for and skip duplicates during batch import using strict 100% all-column matching (both DB and intra-batch)
-  let rowsToInsert = cleanedRows;
   try {
-    const existingList = await fetchAllSupabaseTransactions(url, key, "created_at.asc", "*");
-    const seenFingerprints = new Set(existingList.map(ex => getTransactionStrictFingerprint(ex)));
-    rowsToInsert = [];
-    for (const nr of cleanedRows) {
-      const fp = getTransactionStrictFingerprint(nr);
-      if (!seenFingerprints.has(fp)) {
-        seenFingerprints.add(fp);
-        rowsToInsert.push(nr);
-      }
-    }
-  } catch (dupCheckErr) {
-    console.warn("Duplicate check pre-fetch skipped:", dupCheckErr);
-  }
-
-  if (rowsToInsert.length === 0) {
-    return res.json({ success: true, inserted: 0, skipped_duplicates: cleanedRows.length, errors: [], message: "All imported rows were duplicates and skipped." });
-  }
-
-  // ATOMIC BATCH IMPORT (CQ-07):
-  // PostgREST executes a single POST request with a JSON array as a single atomic PostgreSQL transaction.
-  // If any row fails, PostgreSQL rolls back the entire batch insert so no partial data remains.
-  try {
-    const response = await fetch(`${url}/rest/v1/transactions`, {
+    const response = await fetch(`${url}/rest/v1/rpc/import_transactions_batch`, {
       method: "POST",
       headers: {
         apikey: key,
         Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        Prefer: "return=representation"
+        "Content-Type": "application/json"
       },
-      body: JSON.stringify(rowsToInsert)
+      body: JSON.stringify({ rows: preparedRows })
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(400).json({
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({
         success: false,
-        error: `Atomic batch import failed and was completely rolled back: ${errText}`,
         inserted: 0,
-        errors: [{ error: errText }]
+        errors: [{ error: errText || "Atomic batch procedure rejected the import." }],
+        message: "Atomic batch import failed. No partial success is reported."
       });
     }
 
-    const insertedData = await response.json();
-    const count = Array.isArray(insertedData) ? insertedData.length : rowsToInsert.length;
-
+    const result = await response.json().catch(() => null);
     return res.json({
       success: true,
-      inserted: count,
-      skipped_duplicates: cleanedRows.length - rowsToInsert.length,
+      inserted: preparedRows.length,
+      skipped_duplicates: 0,
       errors: [],
-      message: `Successfully and atomically imported ${count} transactions.`
+      procedure_result: result,
+      message: `Successfully and atomically imported ${preparedRows.length} transactions.`
     });
   } catch (err: any) {
-    return res.status(500).json({
+    return res.status(503).json({
       success: false,
-      error: `Network or database error during atomic batch import (0 rows saved): ${err.message}`,
-      inserted: 0
+      inserted: 0,
+      errors: [{ error: "Database connection unavailable during atomic import." }],
+      message: err?.message || "Atomic batch import could not be completed."
     });
   }
 });
 
-// 1. Scan Database Transactions for 100% Exact Duplicates (Preview Mode - No Deletion)
-app.get("/api/transactions/scan-duplicates", requireOwner, async (req: Request, res: Response) => {
+// 5. Duplicate scanningapp.get("/api/transactions/scan-duplicates", requireOwner, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
   try {
     const allTx: any[] = await fetchAllSupabaseTransactions(url, key, "created_at.asc", "*");
@@ -2590,6 +2178,10 @@ app.all(["/api/export/pdf/purchases"], requireOwner, async (req: Request, res: R
   }
 });
 
+app.use("/api", (_req: Request, res: Response) => {
+  return res.status(404).json({ success: false, error: "API endpoint not found." });
+});
+
 // ============================================================================
 // SERVER INITIALIZATION & VITE MIDDLEWARE
 // ============================================================================
@@ -2628,8 +2220,14 @@ async function startServer() {
     });
   }
 
+  await verifySupabaseConnection();
+  setInterval(() => {
+    verifySupabaseConnection().catch(() => undefined);
+  }, 5 * 60 * 1000).unref();
+
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[SERVER] Full-Stack Accounting Server running on http://0.0.0.0:${PORT}`);
+    console.log(`[SERVER] Supabase connection at startup: ${supabaseConnected ? "verified" : "unavailable"}`);
   });
 }
 

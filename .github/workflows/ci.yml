@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "fix/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Server syntax check
+        run: node --check dist/server.cjs
+
+      - name: Inline HTML JavaScript syntax check
+        run: npm run check:html
+
+      - name: Static secret/simulation scan
+        run: |
+          ! grep -RInE 'Owner@123456|Clerk@123456|uae_tax_accounting_system_secure_secret|sb_secret_|window\.supabase\.createClient|Math\.random\(' index.html admin.html server.ts supabase_migration.sql schema_settings.sql test_security.ts ||             (echo "Forbidden secret/client/simulation pattern found." && exit 1)

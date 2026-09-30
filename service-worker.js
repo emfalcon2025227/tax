@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sdi-accounting-v1';
+const CACHE_NAME = 'sdi-accounting-v2';
 
 const STATIC_ASSETS = [
   '/',
