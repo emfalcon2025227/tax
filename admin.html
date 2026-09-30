@@ -3957,7 +3957,7 @@
       localStorage.removeItem("APP_SUPABASE_URL");
 
       // Client fallback analytics respecting custom fiscal quarters, date range, and search
-      const data = simulateAnalytics(filterKey, currentDateFrom, currentDateTo, currentSearch);
+      const data = computeAnalyticsPreview(filterKey, currentDateFrom, currentDateTo, currentSearch);
       renderDashboard(data);
 
       // Sync ledger if synchronized period mode is active
@@ -4436,7 +4436,7 @@
         } else {
           // Client Fallback Excel generation respecting active filters and strict column ordering:
           // Seq | Date | Invoice No | Party Name | TRN | Amount With Tax | VAT 5% | Amount Before Tax
-          const currentData = activeAnalyticsData || simulateAnalytics(currentFilter, currentDateFrom, currentDateTo, currentSearch);
+          const currentData = activeAnalyticsData || computeAnalyticsPreview(currentFilter, currentDateFrom, currentDateTo, currentSearch);
           const rows = [
             ["Seq", "Date", "Invoice No", "Party Name", "TRN", "Amount With Tax", "VAT 5%", "Amount Before Tax"]
           ];
@@ -5415,63 +5415,20 @@
     }
 
     // Authentic UAE Suppliers strictly from the 19 registered records
-    const REAL_UAE_RECORDS = [
-      { party_name: "SEWA", trn: "100394961500003", type: "purchases" },
-      { party_name: "Talabat", trn: "100000978500003", type: "sales" },
-      { party_name: "NATIONAL DAIRY L.L.C", trn: "100303591000003", type: "purchases" },
-      { party_name: "AL HAJJAN FOODSTUFF TRADING", trn: "100023718800003", type: "sales" },
-      { party_name: "Al Futtaim Logistics LLC", trn: "100234567890003", type: "sales" },
-      { party_name: "Emirates National Oil Co", trn: "100456789012003", type: "purchases" },
-      { party_name: "Emaar Properties PJSC", trn: "100345678901003", type: "sales" },
-      { party_name: "Sharaf DG Commercial", trn: "100567890123003", type: "purchases" },
-      { party_name: "Dubai Holding Tech LLC", trn: "100678901234003", type: "sales" },
-      { party_name: "DEWA Utility Services", trn: "100901234567003", type: "purchases" },
-      { party_name: "Etisalat Telecommunications", trn: "100012345678003", type: "purchases" },
-      { party_name: "Du Telecom PJSC", trn: "100123456789003", type: "purchases" },
-      { party_name: "ADNOC Distribution", trn: "100234567891003", type: "purchases" },
-      { party_name: "Lulu Hypermarket LLC", trn: "100345678912003", type: "sales" },
-      { party_name: "Carrefour Majid Al Futtaim", trn: "100456789123003", type: "sales" },
-      { party_name: "Almarai Emirates LLC", trn: "100567891234003", type: "purchases" },
-      { party_name: "Aramex Emirates LLC", trn: "100678912345003", type: "purchases" },
-      { party_name: "Agthia Group PJSC", trn: "100789012345003", type: "sales" },
-      { party_name: "DP World UAE Region", trn: "100890123456003", type: "sales" }
-    ];
+    // Production supplier directory is loaded only from the authenticated server API.
+// No hardcoded supplier or transaction dataset is permitted.
+const REAL_UAE_RECORDS = [];
 
-    // Load custom suppliers saved in localStorage
-    try {
-      const savedCustom = localStorage.getItem("accounting_custom_suppliers");
-      if (savedCustom) {
-        const customList = JSON.parse(savedCustom);
-        if (Array.isArray(customList)) {
-          customList.forEach(cs => {
-            if (cs && cs.name && cs.trn && !REAL_UAE_RECORDS.some(r => r.trn === cs.trn)) {
-              REAL_UAE_RECORDS.push({
-                party_name: cs.name,
-                trn: cs.trn,
-                type: "purchases"
-              });
-            }
-          });
-        }
-      }
-    } catch (e) {
-      console.warn("Error loading custom suppliers:", e);
-    }
+function computeAnalyticsPreview(filterKey, dateFrom = null, dateTo = null, search = null) {
+  const baseList = (typeof allLedgerTransactions !== "undefined" && Array.isArray(allLedgerTransactions))
+    ? allLedgerTransactions
+    : [];
+  const result = processTransactionsAnalytics(baseList, filterKey, dateFrom, dateTo, search);
+  activeAnalyticsData = result;
+  return result;
+}
 
-    // Analytics simulation for browser preview respecting custom fiscal quarters, dates, and search
-    function simulateAnalytics(filterKey, dateFrom = null, dateTo = null, search = null) {
-      let baseList = (typeof allLedgerTransactions !== "undefined" && Array.isArray(allLedgerTransactions) && allLedgerTransactions.length > 0)
-        ? allLedgerTransactions
-        : [];
-      const result = processTransactionsAnalytics(baseList, filterKey, dateFrom, dateTo, search);
-      activeAnalyticsData = result;
-      return result;
-    }
-
-    // =========================================================================
-    // TASK 1 & 2: SYSTEM SETTINGS CONTROLLER (SUPABASE & VAT CONFIGURATION)
-    // =========================================================================
-    let currentVatRate = 5.0;
+    let currentVatRate = 5.0;    let currentVatRate = 5.0;
 
     function switchSettingsTab(tabName) {
       const tabUsersBtn = document.getElementById("tab-btn-users");
