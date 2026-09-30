@@ -445,7 +445,10 @@ app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
     );
     if (srvRes.ok) {
       const dbUsers = await srvRes.json();
-      if (Array.isArray(dbUsers) && dbUsers.length > 0) {
+      if (!Array.isArray(dbUsers)) {
+        databaseError = true;
+        authStage = "AUTH_DATABASE_ERROR";
+      } else if (dbUsers.length > 0) {
         for (const usr of dbUsers) {
           const matchedName = String(usr.username || usr.email || "").trim().toLowerCase() === u;
           if (matchedName) {
