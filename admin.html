@@ -4953,54 +4953,50 @@
     }
 
     function normalizeDateStr(raw) {
-      if (!raw) return new Date().toISOString().split("T")[0];
-      let s = normalizeArabicNumerals(String(raw).trim().replace(/^['"]|['"]$/g, ''));
-      if (!s || ["#n/a", "null", "none", "nan", "blank", "n/a", "-"].includes(s.toLowerCase())) {
-        return new Date().toISOString().split("T")[0];
-      }
+      if (raw === null || raw === undefined) return "";
+      let s = normalizeArabicNumerals(String(raw).trim().replace(/^['"]|['"]$/g, ""));
+      if (!s || ["#n/a", "null", "none", "nan", "blank", "n/a", "-"].includes(s.toLowerCase())) return "";
 
-      // Check if raw value is an Excel numeric serial date (e.g. 45292 or "45292")
+      // Excel serial date
       const numSerial = Number(s);
-      if (!isNaN(numSerial) && numSerial >= 25000 && numSerial <= 65000 && !s.includes("-") && !s.includes("/") && !s.includes(".")) {
-        try {
-          return excelDateToYmd(numSerial);
-        } catch (e) {
-          // continue to string parsing
-        }
+      if (!isNaN(numSerial) && numSerial >= 25000 && numSerial <= 65000 && !/[\-\/\.]/.test(s)) {
+        try { return excelDateToYmd(numSerial); } catch (e) { return ""; }
       }
 
       if (s.includes("T")) s = s.split("T")[0].trim();
       if (s.includes(" ")) s = s.split(" ")[0].trim();
-
-      // YYYY-MM-DD
       if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
 
-      // DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
-      let matchDmy = s.match(/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})$/);
+      const matchDmy = s.match(/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})$/);
       if (matchDmy) {
-        let p1 = matchDmy[1].padStart(2, '0');
-        let p2 = matchDmy[2].padStart(2, '0');
-        let y = matchDmy[3];
-        if (parseInt(p2, 10) > 12 && parseInt(p1, 10) <= 12) {
-          return `${y}-${p1}-${p2}`;
+        const p1 = parseInt(matchDmy[1], 10);
+        const p2 = parseInt(matchDmy[2], 10);
+        const y = matchDmy[3];
+
+        let day = p1;
+        let month = p2;
+        if (p1 <= 12 && p2 > 12) {
+          month = p1;
+          day = p2;
         }
-        return `${y}-${p2}-${p1}`;
+        if (month < 1 || month > 12 || day < 1 || day > 31) return "";
+
+        return `${y}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       }
 
-      // YYYY/MM/DD or YYYY.MM.DD
-      let matchYmd = s.match(/^(\d{4})[\/\.-](\d{1,2})[\/\.-](\d{1,2})$/);
+      const matchYmd = s.match(/^(\d{4})[\/\.-](\d{1,2})[\/\.-](\d{1,2})$/);
       if (matchYmd) {
-        return `${matchYmd[1]}-${matchYmd[2].padStart(2, '0')}-${matchYmd[3].padStart(2, '0')}`;
+        const year = parseInt(matchYmd[1], 10);
+        const month = parseInt(matchYmd[2], 10);
+        const day = parseInt(matchYmd[3], 10);
+        if (month < 1 || month > 12 || day < 1 || day > 31) return "";
+        return `${matchYmd[1]}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       }
 
-      let parsed = new Date(s);
-      if (!isNaN(parsed.getTime())) {
-        return parsed.toISOString().split("T")[0];
-      }
-      return new Date().toISOString().split("T")[0];
+      return "";
     }
 
-    function cleanDecimalNum(raw) {
+    function cleanDecimalNum(raw)    function cleanDecimalNum(raw) {
       if (raw === null || raw === undefined) return 0.00;
       if (typeof raw === 'number') return isNaN(raw) ? 0.00 : Math.round(raw * 100) / 100;
       let s = normalizeArabicNumerals(String(raw).trim().replace(/^['"]|['"]$/g, ''));
@@ -5023,19 +5019,13 @@
     }
 
     function cleanTrnStr(raw) {
-      if (raw === null || raw === undefined) return { trn: "000000000000000", isValid: true };
-      let s = normalizeArabicNumerals(String(raw).trim().replace(/^['"]|['"]$/g, ''));
-      if (!s) return { trn: "000000000000000", isValid: true };
-      let digits = s.replace(/[^0-9]/g, '');
-      if (digits.length > 0 && digits.length < 15) {
-        digits = digits.padStart(15, '0');
-      } else if (digits.length > 15) {
-        digits = digits.slice(0, 15);
-      }
-      return { trn: digits || s || "000000000000000", isValid: true };
+      if (raw === null || raw === undefined) return { trn: "", isValid: false };
+      const s = normalizeArabicNumerals(String(raw).trim().replace(/^['"]|['"]$/g, ""));
+      const digits = s.replace(/[^0-9]/g, "");
+      return { trn: digits, isValid: /^\d{15}$/.test(digits) };
     }
 
-    function handleFileSelected(event) {
+    function handleFileSelected(event)    function handleFileSelected(event) {
       const file = event.target.files && event.target.files[0];
       if (!file) return;
       processCsvFile(file);
