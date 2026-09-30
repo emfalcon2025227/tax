@@ -416,7 +416,7 @@
           };
         }
 
-        console.log("[AUTH] Authentication response:", authResult);
+        console.log("[AUTH] Authentication response status:", authResult?.success ? "success" : "rejected");
 
         if (authResult && authResult.success && authResult.token) {
           showAlert(`Welcome, ${authResult.username || username}! Signing into ${authResult.role} session...`, false);
