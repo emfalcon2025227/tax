@@ -5409,10 +5409,10 @@
           tr.className = "hover:bg-slate-50";
           tr.innerHTML = `
             <td class="py-1.5 px-2 text-center text-slate-500 font-semibold">${rowNum}</td>
-            <td class="py-1.5 px-3">${normalizedDate}</td>
-            <td class="py-1.5 px-3 font-bold text-slate-700">${invNo || '<span class="text-slate-300 font-normal italic">—</span>'}</td>
-            <td class="py-1.5 px-3 truncate max-w-[130px]">${party}</td>
-            <td class="py-1.5 px-3 font-mono text-slate-800">${cleanTrn || '<span class="text-slate-300 italic">—</span>'}</td>
+            <td class="py-1.5 px-3">${escapeHtml(normalizedDate)}</td>
+            <td class="py-1.5 px-3 font-bold text-slate-700">${invNo ? escapeHtml(invNo) : '<span class="text-slate-300 font-normal italic">—</span>'}</td>
+            <td class="py-1.5 px-3 truncate max-w-[130px]">${escapeHtml(party)}</td>
+            <td class="py-1.5 px-3 font-mono text-slate-800">${cleanTrn ? escapeHtml(txType === "sales" ? "000000000000000" : cleanTrn) : '<span class="text-slate-300 italic">—</span>'}</td>
             <td class="py-1.5 px-3 text-right font-bold text-slate-900">AED ${amtBefore.toFixed(2)}</td>
             <td class="py-1.5 px-3 text-right font-semibold ${isExempt ? 'text-amber-600' : 'text-indigo-700'}">
               ${isExempt ? '<span class="inline-block bg-amber-50 text-amber-700 border border-amber-200 px-1 py-0.5 rounded text-[9px] font-bold mr-1">EXEMPT</span>' : ''}AED ${vatAmt.toFixed(2)}
