@@ -905,59 +905,84 @@ app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, re
   });
 });
 
-app.post("/api/test-connection", requireOwner, async (req: Request, res: Response) => {
-  const targetUrl = (req.body.supabase_url || process.env.SUPABASE_URL || "https://frmgpbwbmarkatjroflr.supabase.co").replace(/\/+$/, "");
-  const targetKey = req.body.supabase_key || process.env.SUPABASE_KEY || "sb_secret_lESPIyr1EUoMeckMYNPhBQ_wOBAaMya";
+app.post("/api/test-connection", requireOwner, async (_req: Request, res: Response) => {
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key) {
+    return res.status(503).json({ status: "error", message: "Server database configuration unavailable." });
+  }
   try {
-    const check = await fetch(`${targetUrl}/rest/v1/suppliers?select=name,trn&limit=1`, {
-      headers: {
-        apikey: targetKey,
-        Authorization: `Bearer ${targetKey}`
-      }
+    const check = await fetch(`${url}/rest/v1/suppliers?select=name,trn&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10000)
     });
     if (!check.ok) {
       const errText = await check.text();
-      return res.json({ status: "error", message: `Supabase returned HTTP ${check.status}: ${errText}` });
+      return res.status(check.status).json({ status: "error", message: `Supabase returned HTTP ${check.status}: ${errText}` });
     }
-    const data = await check.json();
+    const data = await check.json().catch(() => []);
     return res.json({
       status: "success",
-      message: `Connection verified successfully! Queried 'suppliers' table (${Array.isArray(data) ? data.length : 1} row checked).`
+      message: `Connection verified successfully. Supplier query returned ${Array.isArray(data) ? data.length : 0} row(s).`
     });
-  } catch (err: any) {
-    return res.json({ status: "error", message: err.message || "Network error connecting to Supabase" });
+  } catch (err) {
+    console.error("[DB-CONNECTION] Test failed:", err);
+    return res.status(503).json({ status: "error", message: "Database connection failed." });
   }
 });
 
 // 1. Health & Connection Status
-app.get("/api/health", (req: Request, res: Response) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
-});
+let supabaseConnected = false;
+let supabaseLastCheckedAt = 0;
 
-app.get("/api/status", async (req: Request, res: Response) => {
-  const { url, key } = getSupabaseConfig();
-  try {
-    const check = await fetch(`${url}/rest/v1/suppliers?select=id&limit=1`, {
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`
-      }
-    });
-    res.json({
-      status: "ok",
-      supabase_connected: check.ok,
-      url: url.replace(/https?:\/\//, "").split(".")[0] + ".supabase.co"
-    });
-  } catch (err: any) {
-    res.json({
-      status: "ok",
-      supabase_connected: false,
-      error: err.message
-    });
+async function verifySupabaseConnection(): Promise<boolean> {
+  if (!isSupabaseConfigured()) {
+    supabaseConnected = false;
+    supabaseLastCheckedAt = Date.now();
+    return false;
   }
+
+  try {
+    const { url, key } = getSupabaseConfig();
+    const response = await fetch(`${url}/rest/v1/suppliers?select=id&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10000)
+    });
+    supabaseConnected = response.ok;
+    supabaseLastCheckedAt = Date.now();
+    return supabaseConnected;
+  } catch (err) {
+    supabaseConnected = false;
+    supabaseLastCheckedAt = Date.now();
+    console.warn("[SUPABASE] Connectivity check failed:", err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
+
+app.get("/api/health", (_req: Request, res: Response) => {
+  res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// 2. Suppliers Endpoints (Both Owner & Clerk can read and create)
+app.get("/_health", async (_req: Request, res: Response) => {
+  const connected = await verifySupabaseConnection();
+  return res.status(connected ? 200 : 503).json({
+    status: connected ? "healthy" : "degraded",
+    supabase_connected: connected,
+    checked_at: new Date(supabaseLastCheckedAt).toISOString()
+  });
+});
+
+app.get("/api/status", async (_req: Request, res: Response) => {
+  const connected = await verifySupabaseConnection();
+  return res.status(connected ? 200 : 503).json({
+    status: connected ? "ok" : "degraded",
+    supabase_connected: connected,
+    url: SUPABASE_URL ? SUPABASE_URL.replace(/^https?:\/\//, "").replace(/\/$/, "") : null
+  });
+});
+
+setInterval(() => { void verifySupabaseConnection(); }, 5 * 60 * 1000);
+
+// 2. Suppliers Endpoints// 2. Suppliers Endpoints (Both Owner & Clerk can read and create)
 app.get("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
   const cfg = readConfigJson();
@@ -1609,162 +1634,18 @@ app.delete(["/api/transactions/:id", "/api/transactions"], requireOwner, async (
 });
 
 // 3.3 Danger Zone: Destructive Actions Suite Endpoint (POST Method - Owner Only)
-app.post("/api/settings/reset_data", resetDataLimiter, requireOwner, async (req: Request, res: Response) => {
-  const { url, key } = getSupabaseConfig();
-  const actor = (req as any).user?.username || "Owner";
-  const actionType = String(
-    req.body?.action_type || req.body?.transaction_type || req.body?.type_to_reset || ""
-  ).toLowerCase().trim();
-  const confirmPhrase = String(req.body?.confirm_phrase || req.body?.confirmText || "").trim();
-
-  try {
-    const headers = {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-      Prefer: "return=representation"
-    };
-
-    if (actionType === "sales" || actionType === "reset_sales") {
-      if (confirmPhrase !== "DELETE ALL SALES") {
-        auditLog(actor, "DANGER_ZONE_RESET_REJECTED", "sales", "FAILURE", { reason: "Invalid confirmation phrase" });
-        return res.status(400).json({
-          success: false,
-          error: "Confirmation failed: You must type 'DELETE ALL SALES' to reset sales transactions."
-        });
-      }
-      const response = await fetch(`${url}/rest/v1/transactions?transaction_type=eq.sales`, { method: "DELETE", headers });
-      if (!response.ok) {
-        const errText = await response.text();
-        return res.status(500).json({ success: false, error: errText || `HTTP ${response.status} from Supabase` });
-      }
-      const data = await response.json().catch(() => []);
-      const deletedCount = Array.isArray(data) ? data.length : 0;
-      auditLog(actor, "DANGER_ZONE_RESET", "sales", "SUCCESS", { actionType: "sales", deleted_count: deletedCount });
-      return res.json({ success: true, action_type: "sales", deleted_count: deletedCount, message: "Successfully deleted all SALES transactions." });
-    }
-
-    if (actionType === "purchases" || actionType === "reset_purchases") {
-      if (confirmPhrase !== "DELETE ALL PURCHASES") {
-        auditLog(actor, "DANGER_ZONE_RESET_REJECTED", "purchases", "FAILURE", { reason: "Invalid confirmation phrase" });
-        return res.status(400).json({
-          success: false,
-          error: "Confirmation failed: You must type 'DELETE ALL PURCHASES' to reset purchase transactions."
-        });
-      }
-      const response = await fetch(`${url}/rest/v1/transactions?transaction_type=eq.purchases`, { method: "DELETE", headers });
-      if (!response.ok) {
-        const errText = await response.text();
-        return res.status(500).json({ success: false, error: errText || `HTTP ${response.status} from Supabase` });
-      }
-      const data = await response.json().catch(() => []);
-      const deletedCount = Array.isArray(data) ? data.length : 0;
-      auditLog(actor, "DANGER_ZONE_RESET", "purchases", "SUCCESS", { actionType: "purchases", deleted_count: deletedCount });
-      return res.json({ success: true, action_type: "purchases", deleted_count: deletedCount, message: "Successfully deleted all PURCHASES transactions." });
-    }
-
-    if (actionType === "single_supplier" || actionType === "delete_single_supplier") {
-      const supplierIdOrTrn = String(req.body?.supplier_identifier || req.body?.trn || req.body?.id || "").trim();
-      if (!supplierIdOrTrn) {
-        return res.status(400).json({ success: false, error: "Missing supplier identifier (TRN or ID)." });
-      }
-
-      // Foreign Key / Relational Integrity Check
-      const chkResp = await fetch(`${url}/rest/v1/transactions?select=id&trn=eq.${encodeURIComponent(supplierIdOrTrn)}`, { headers });
-      if (chkResp.ok) {
-        const chkData = await chkResp.json().catch(() => []);
-        if (Array.isArray(chkData) && chkData.length > 0) {
-          return res.status(500).json({
-            success: false,
-            error: `Foreign Key / Relational Integrity Violation: Supplier '${supplierIdOrTrn}' has ${chkData.length} existing transactions. Delete those transactions first.`
-          });
-        }
-      }
-
-      let delFilter = "";
-      if (/^\d{15}$/.test(supplierIdOrTrn)) {
-        delFilter = `trn=eq.${encodeURIComponent(supplierIdOrTrn)}`;
-      } else if (/^\d+$/.test(supplierIdOrTrn) && supplierIdOrTrn.length < 12) {
-        delFilter = `or=(id.eq.${encodeURIComponent(supplierIdOrTrn)},trn.eq.${encodeURIComponent(supplierIdOrTrn)})`;
-      } else {
-        delFilter = `or=(name.eq.${encodeURIComponent(supplierIdOrTrn)},trn.eq.${encodeURIComponent(supplierIdOrTrn)})`;
-      }
-
-      const response = await fetch(`${url}/rest/v1/suppliers?${delFilter}`, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
-      if (!response.ok) {
-        const errText = await response.text();
-        return res.status(500).json({ success: false, error: errText || `HTTP ${response.status} from Supabase` });
-      }
-      const data = await response.json().catch(() => []);
-      return res.json({ success: true, action_type: "single_supplier", deleted_count: Array.isArray(data) ? data.length : 0, message: `Supplier '${supplierIdOrTrn}' deleted successfully.` });
-    }
-
-    if (actionType === "all_suppliers" || actionType === "reset_suppliers") {
-      const chkResp = await fetch(`${url}/rest/v1/transactions?select=id&limit=1`, { headers });
-      if (chkResp.ok) {
-        const chkData = await chkResp.json().catch(() => []);
-        if (Array.isArray(chkData) && chkData.length > 0) {
-          return res.status(500).json({
-            success: false,
-            error: "Relational Constraint Violation: Cannot delete all suppliers while transaction records exist. Run Factory Reset or clear transactions first."
-          });
-        }
-      }
-
-      const response = await fetch(`${url}/rest/v1/suppliers?trn=not.is.null`, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
-      if (!response.ok) {
-        const errText = await response.text();
-        return res.status(500).json({ success: false, error: errText || `HTTP ${response.status} from Supabase` });
-      }
-      const data = await response.json().catch(() => []);
-      return res.json({ success: true, action_type: "all_suppliers", deleted_count: Array.isArray(data) ? data.length : 0, message: "Successfully deleted all registered suppliers." });
-    }
-
-    if (actionType === "factory_reset" || actionType === "wipe_database" || actionType === "reset_all") {
-      if (confirmPhrase !== "WIPE ENTIRE DATABASE") {
-        auditLog(actor, "DANGER_ZONE_RESET_REJECTED", "factory_reset", "FAILURE", { reason: "Invalid confirmation phrase" });
-        return res.status(400).json({
-          success: false,
-          error: "Confirmation failed: You must type 'WIPE ENTIRE DATABASE' to perform factory reset."
-        });
-      }
-      // 1. Delete transactions first
-      const txResp = await fetch(`${url}/rest/v1/transactions?id=neq.0`, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
-      if (!txResp.ok) {
-        const errText = await txResp.text();
-        return res.status(500).json({ success: false, error: `Failed to wipe transactions: ${errText}` });
-      }
-      const txData = await txResp.json().catch(() => []);
-
-      // 2. Delete suppliers
-      const supResp = await fetch(`${url}/rest/v1/suppliers?trn=not.is.null`, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
-      if (!supResp.ok) {
-        const errText = await supResp.text();
-        return res.status(500).json({ success: false, error: `Failed to wipe suppliers: ${errText}` });
-      }
-      const supData = await supResp.json().catch(() => []);
-
-      return res.json({
-        success: true,
-        action_type: "factory_reset",
-        transactions_deleted: Array.isArray(txData) ? txData.length : 0,
-        suppliers_deleted: Array.isArray(supData) ? supData.length : 0,
-        message: "Factory Reset Complete! Database completely wiped."
-      });
-    }
-
-    return res.status(400).json({
-      success: false,
-      error: `Invalid action_type: '${actionType}'. Supported actions: 'sales', 'purchases', 'single_supplier', 'all_suppliers', or 'factory_reset'.`
-    });
-
-  } catch (err: any) {
-    console.error(`[SERVER] Exception in reset_data (${actionType}):`, err);
-    return res.status(500).json({ success: false, error: err.message || String(err) });
-  }
+app.post("/api/settings/reset_data", resetDataLimiter, requireOwner, (req: Request, res: Response) => {
+  const actor = String((req as any).user?.username || "Owner");
+  auditLog(actor, "DANGER_ZONE_RESET_BLOCKED", "production-data", "FAILURE", {
+    reason: "Production bulk reset/wipe is permanently disabled."
+  });
+  return res.status(403).json({
+    success: false,
+    error: "Production data reset and database wipe are permanently disabled."
+  });
 });
 
-// Helper to safely clean numeric values from CSV imports without NaN
+// Helper to safely clean numeric values from CSV imports// Helper to safely clean numeric values from CSV imports without NaN
 function parseImportDecimal(val: any): number {
   if (val === null || val === undefined) return 0.0;
   if (typeof val === "number") return isNaN(val) ? 0.0 : Math.round(val * 100) / 100;
