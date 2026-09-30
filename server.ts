@@ -887,17 +887,24 @@ app.post("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
   const rawBody = req.body;
   const items = Array.isArray(rawBody) ? rawBody : [rawBody];
 
-  // Clean suppliers: ensure format as text
-  const cleanedSuppliers = items.map((item: any) => {
-    let trnRaw = String(item.trn || "").trim();
-    let trnDigits = trnRaw.replace(/\D/g, "");
-    if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-    if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
-    return {
-      name: String(item.name || "UNKNOWN_SUPPLIER").trim(),
-      trn: trnDigits || trnRaw
-    };
-  });
+  if (items.length === 0 || items.length > 100) {
+    return res.status(400).json({ success: false, error: "Request must contain between 1 and 100 suppliers." });
+  }
+
+  const cleanedSuppliers = items.map((item: any) => ({
+    name: String(item?.name || "").trim(),
+    trn: String(item?.trn || "").trim()
+  }));
+
+  for (let i = 0; i < cleanedSuppliers.length; i++) {
+    const supplier = cleanedSuppliers[i];
+    if (!supplier.name) {
+      return res.status(400).json({ success: false, error: `Supplier name is required for row ${i + 1}.` });
+    }
+    if (!/^\d{15}$/.test(supplier.trn)) {
+      return res.status(400).json({ success: false, error: `Supplier TRN must contain exactly 15 numeric digits for row ${i + 1}.` });
+    }
+  }
 
   try {
     const response = await fetch(`${url}/rest/v1/suppliers`, {
@@ -906,24 +913,25 @@ app.post("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
         apikey: key,
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
-        Prefer: "return=representation,resolution=merge-duplicates"
+        Prefer: "return=representation"
       },
       body: JSON.stringify(cleanedSuppliers)
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ error: errText });
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Supplier registration rejected by database." });
     }
-    const data = await response.json();
-    res.status(201).json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+
+    const data = await response.json().catch(() => []);
+    return res.status(201).json({ success: true, data });
+  } catch {
+    return res.status(503).json({ success: false, error: "Supplier service is temporarily unavailable." });
   }
 });
 
 // Update Supplier (PUT /api/suppliers/:identifier or PUT /api/suppliers)
-app.put(["/api/suppliers/:identifier", "/api/suppliers"], requireAuth, async (req: Request, res: Response) => {
+
   const { url, key } = getSupabaseConfig();
   const identifier = String(req.params.identifier || req.body.identifier || req.body.old_trn || req.body.trn || req.body.id || "").trim();
   const name = String(req.body.name || "").trim();
