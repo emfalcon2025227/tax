@@ -1922,12 +1922,12 @@
     function handleOnlineEvent() {
       const dot = document.getElementById("status-dot");
       const text = document.getElementById("status-text");
-      if (supabaseClient) {
+      if (serverDbConnected) {
         dot.className = "w-2 h-2 rounded-full bg-emerald-500";
         text.textContent = "Supabase Active";
       } else {
-        dot.className = "w-2 h-2 rounded-full bg-blue-400";
-        text.textContent = "Online";
+        dot.className = "w-2 h-2 rounded-full bg-amber-500";
+        text.textContent = "Database Disconnected";
       }
 
       const count = getOfflineQueue().length;
@@ -2481,7 +2481,8 @@
         const res = await fetch("/api/status");
         if (res.ok) {
           const status = await res.json();
-          if (status.supabase_connected) {
+          serverDbConnected = status.supabase_connected === true;
+          if (serverDbConnected) {
             dot.className = "w-2 h-2 rounded-full bg-emerald-500";
             text.textContent = "Supabase Active (Server Proxy)";
             syncSuppliersFromSupabase();
@@ -2492,9 +2493,10 @@
         console.warn("Server status check failed:", err);
       }
 
-      dot.className = "w-2 h-2 rounded-full bg-emerald-500";
-      text.textContent = "Supabase Active (Server Proxy)";
-      syncSuppliersFromSupabase();
+      serverDbConnected = false;
+      dot.className = "w-2 h-2 rounded-full bg-amber-500";
+      text.textContent = "Database Disconnected";
+      // Do not load or fabricate supplier data while the trusted server reports no DB connection.
     }
 
     function openConfigModal() {
@@ -2552,121 +2554,149 @@
     });
   
     // ------------------------------------------------------------------------
-    // CSP-COMPLIANT AUTOMATIC PROGRAMMATIC EVENT BINDING ENGINE (CQ-08)
-    // ------------------------------------------------------------------------
-    function executeInlineHandler(el, handlerStr, event) {
-      if (!handlerStr) return;
-      const statements = handlerStr.split(';').map(s => s.trim()).filter(Boolean);
-      
-      for (const statement of statements) {
-        if (statement.startsWith('event.stopPropagation()')) {
-          event.stopPropagation();
-          continue;
-        }
-        if (statement.startsWith('event.preventDefault()')) {
-          event.preventDefault();
-          continue;
-        }
+    // CSP-COMPLIANT PROGRAMMATIC EVENT DISPATCHER
+function splitTopLevel(source, separator) {
+  const result = [];
+  let current = "";
+  let quote = null;
+  let escape = false;
+  let depth = 0;
 
-        // Direct element style/class show/hide manipulations
-        const toastMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.add\(['"]([^'"]+)['"]\)/);
-        if (toastMatch) {
-          const targetEl = document.getElementById(toastMatch[1]);
-          if (targetEl) targetEl.classList.add(toastMatch[2]);
-          continue;
-        }
-        const toastRemoveMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.remove\(['"]([^'"]+)['"]\)/);
-        if (toastRemoveMatch) {
-          const targetEl = document.getElementById(toastRemoveMatch[1]);
-          if (targetEl) targetEl.classList.remove(toastRemoveMatch[2]);
-          continue;
-        }
+  for (const ch of String(source || "")) {
+    if (escape) {
+      current += ch;
+      escape = false;
+      continue;
+    }
+    if (ch === "\\") {
+      current += ch;
+      escape = true;
+      continue;
+    }
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      current += ch;
+      quote = ch;
+      continue;
+    }
+    if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch)) depth = Math.max(0, depth - 1);
 
-        // Click emulation trigger
-        const clickMatch = statement.match(/document\.getElementById\(['"]([^'"]+)['"]\)\.click\(\)/);
-        if (clickMatch) {
-          const targetEl = document.getElementById(clickMatch[1]);
-          if (targetEl) targetEl.click();
-          continue;
-        }
+    if (ch === separator && depth === 0) {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
 
-        // Function call: functionName(arguments)
-        const match = statement.match(/^([a-zA-Z0-9_$]+)\((.*)\)$/);
-        if (match) {
-          const funcName = match[1];
-          const argsStr = match[2].trim();
-          const fn = window[funcName];
-          if (typeof fn === 'function') {
-            const args = [];
-            if (argsStr) {
-              const rawArgs = argsStr.split(',').map(a => a.trim());
-              for (const rawArg of rawArgs) {
-                if (rawArg === 'event') {
-                  args.push(event);
-                } else if (rawArg === 'this') {
-                  args.push(el);
-                } else if (rawArg === 'this.value') {
-                  args.push(el.value);
-                } else if (rawArg === 'this.checked') {
-                  args.push(el.checked);
-                } else if ((rawArg.startsWith("'") && rawArg.endsWith("'")) || (rawArg.startsWith('"') && rawArg.endsWith('"'))) {
-                  args.push(rawArg.slice(1, -1));
-                } else if (rawArg.startsWith(String.fromCharCode(96)) && rawArg.endsWith(String.fromCharCode(96))) {
-                  args.push(rawArg.slice(1, -1)); // simple template string fallback
-                } else {
-                  if (!isNaN(rawArg) && rawArg !== '') {
-                    args.push(Number(rawArg));
-                  } else {
-                    args.push(window[rawArg] !== undefined ? window[rawArg] : rawArg);
-                  }
-                }
-              }
-            }
-            fn.apply(el, args);
-          } else {
-            console.warn("[EVENT-BIND] Function window." + funcName + " is not defined.");
-          }
-        }
-      }
+  if (current.trim()) result.push(current.trim());
+  return result;
+}
+
+function parseHandlerArgument(rawArg, el, event) {
+  const arg = String(rawArg || "").trim();
+  if (arg === "event") return event;
+  if (arg === "this") return el;
+  if (arg === "this.value") return el.value;
+  if (arg === "this.checked") return el.checked;
+
+  if ((arg.startsWith("'") && arg.endsWith("'")) || (arg.startsWith('"') && arg.endsWith('"'))) {
+    return arg.slice(1, -1);
+  }
+  if (arg.startsWith("`") && arg.endsWith("`")) {
+    return arg.slice(1, -1);
+  }
+  if (arg === "true") return true;
+  if (arg === "false") return false;
+  if (arg === "null") return null;
+  if (/^-?\d+(\.\d+)?$/.test(arg)) return Number(arg);
+
+  return window[arg] !== undefined ? window[arg] : arg;
+}
+
+function executeInlineHandler(el, handlerStr, event) {
+  if (!handlerStr) return;
+
+  for (const statement of splitTopLevel(handlerStr, ";")) {
+    if (!statement) continue;
+
+    if (statement === "event.stopPropagation()") {
+      event.stopPropagation();
+      continue;
+    }
+    if (statement === "event.preventDefault()") {
+      event.preventDefault();
+      continue;
     }
 
-    onReady(() => {
-      console.log("[EVENT-BIND] Initializing programmatic CSP event bindings...");
-      
-      // Bind click handlers (data-onclick)
-      document.querySelectorAll('[data-onclick]').forEach(el => {
-        el.addEventListener('click', (e) => {
-          const handlerStr = el.getAttribute('data-onclick');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
+    const classAddMatch = statement.match(/^document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.add\(['"]([^'"]+)['"]\)$/);
+    if (classAddMatch) {
+      document.getElementById(classAddMatch[1])?.classList.add(classAddMatch[2]);
+      continue;
+    }
 
-      // Bind submit handlers (data-onsubmit)
-      document.querySelectorAll('[data-onsubmit]').forEach(el => {
-        el.addEventListener('submit', (e) => {
-          const handlerStr = el.getAttribute('data-onsubmit');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
+    const classRemoveMatch = statement.match(/^document\.getElementById\(['"]([^'"]+)['"]\)\.classList\.remove\(['"]([^'"]+)['"]\)$/);
+    if (classRemoveMatch) {
+      document.getElementById(classRemoveMatch[1])?.classList.remove(classRemoveMatch[2]);
+      continue;
+    }
 
-      // Bind change handlers (data-onchange)
-      document.querySelectorAll('[data-onchange]').forEach(el => {
-        el.addEventListener('change', (e) => {
-          const handlerStr = el.getAttribute('data-onchange');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
+    const clickMatch = statement.match(/^document\.getElementById\(['"]([^'"]+)['"]\)\.click\(\)$/);
+    if (clickMatch) {
+      document.getElementById(clickMatch[1])?.click();
+      continue;
+    }
 
-      // Bind input handlers (data-oninput)
-      document.querySelectorAll('[data-oninput]').forEach(el => {
-        el.addEventListener('input', (e) => {
-          const handlerStr = el.getAttribute('data-oninput');
-          executeInlineHandler(el, handlerStr, e);
-        });
-      });
+    const match = statement.match(/^([a-zA-Z0-9_$]+)\((.*)\)$/s);
+    if (!match) {
+      console.warn("[EVENT-BIND] Unsupported handler expression:", statement);
+      continue;
+    }
 
-      console.log("[EVENT-BIND] Programmatic event bindings complete.");
+    const fn = window[match[1]];
+    if (typeof fn !== "function") {
+      console.warn("[EVENT-BIND] Function window." + match[1] + " is not defined.");
+      continue;
+    }
+
+    const args = splitTopLevel(match[2], ",").map(arg => parseHandlerArgument(arg, el, event));
+    Promise.resolve(fn.apply(el, args)).catch(err => {
+      console.error("[EVENT-BIND] Handler failed:", match[1], err);
     });
-</script>
+  }
+}
+
+function dispatchDataHandler(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+
+  const eventMap = {
+    click: "data-onclick",
+    submit: "data-onsubmit",
+    change: "data-onchange",
+    input: "data-oninput"
+  };
+
+  const attr = eventMap[event.type];
+  if (!attr) return;
+
+  const handlerElement = target.closest(`[${attr}]`);
+  if (!handlerElement) return;
+
+  executeInlineHandler(handlerElement, handlerElement.getAttribute(attr), event);
+}
+
+onReady(() => {
+  document.addEventListener("click", dispatchDataHandler);
+  document.addEventListener("submit", dispatchDataHandler);
+  document.addEventListener("change", dispatchDataHandler);
+  document.addEventListener("input", dispatchDataHandler);
+});
+</script></script>
 </body>
 </html>

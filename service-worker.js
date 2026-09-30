@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sdi-accounting-v1';
+const CACHE_NAME = 'sdi-accounting-v2-20260930';
 
 const STATIC_ASSETS = [
   '/',
@@ -55,7 +55,7 @@ self.addEventListener('fetch', (event) => {
     return; // Direct network fetch for live data
   }
 
-  // Network-First strategy with Cache Fallback for navigation and static assets
+  // Network-first for static assets; API and database traffic is never cached
   event.respondWith(
     fetch(req)
       .then((networkResponse) => {

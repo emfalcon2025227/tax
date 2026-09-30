@@ -1950,69 +1950,33 @@
           <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3.5">
             <div class="flex items-center justify-between">
               <span class="text-xs font-bold text-slate-900 uppercase tracking-wide">Section A: Database Connection</span>
-              <span class="text-[10px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded font-bold">Supabase PostgreSQL</span>
+              <span id="settings-db-mode" class="text-[10px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded font-bold">Automatic Server Connection</span>
             </div>
 
-            <!-- SUPABASE_URL -->
-            <div>
-              <label for="settings-supabase-url" class="block text-xs font-bold text-slate-700 mb-1">
-                SUPABASE_URL <span class="text-rose-500">*</span>
-              </label>
-              <input 
-                type="url" 
-                id="settings-supabase-url" 
-                required 
-                placeholder="https://xxxxxxxx.supabase.co" 
-                class="w-full text-xs font-mono px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-              />
-              <p class="text-[10px] text-slate-500 mt-1">Direct project REST endpoint from your Supabase Project Settings.</p>
-            </div>
-
-            <!-- SUPABASE_KEY -->
-            <div>
-              <div class="flex items-center justify-between mb-1">
-                <label for="settings-supabase-key" class="text-xs font-bold text-slate-700">
-                  SUPABASE_KEY <span class="text-rose-500">*</span>
-                </label>
-                <span class="text-[10px] text-slate-500">Visually masked for security</span>
+            <div class="p-3 bg-white rounded-lg border border-slate-200 space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-[11px] font-bold text-slate-700">Supabase PostgreSQL</span>
+                <span id="settings-db-status" class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">Checking...</span>
               </div>
-              <div class="relative">
-                <input 
-                  type="password" 
-                  id="settings-supabase-key" 
-                  required 
-                  placeholder="sb_secret_... or eyJhbGciOi..." 
-                  class="w-full text-xs font-mono px-3 py-2 pr-10 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                />
-                <button 
-                  type="button" 
-                  id="btn-toggle-key-visibility" 
-                  data-onclick="toggleKeyVisibility()" 
-                  class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-1 cursor-pointer"
-                  title="Toggle key visibility"
-                >
-                  <svg id="eye-icon-svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
-                  </svg>
-                </button>
+              <div>
+                <span class="block text-[10px] text-slate-500 uppercase tracking-wide">Server URL</span>
+                <span id="settings-supabase-url-display" class="block mt-0.5 text-xs font-mono text-slate-700 break-all">Configured by deployment</span>
               </div>
-              <p class="text-[10px] text-slate-500 mt-1">API Key (Anon Public or Service Role) used for backend data synchronization.</p>
+              <p class="text-[10px] text-slate-500">
+                Database credentials are managed securely on the server. They cannot be entered, changed, or stored in the browser.
+              </p>
             </div>
 
-            <!-- Test Connection Action & Result Badge -->
             <div class="pt-2 flex items-center justify-between flex-wrap gap-2 border-t border-slate-200">
-              <button 
-                type="button" 
-                id="btn-test-connection" 
-                data-onclick="testDatabaseConnection()" 
+              <button
+                type="button"
+                id="btn-test-connection"
+                data-onclick="testDatabaseConnection()"
                 class="px-3.5 py-1.5 text-xs font-bold bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 rounded-lg shadow-2xs transition-colors flex items-center space-x-1.5 cursor-pointer"
               >
                 <span id="test-spinner" class="hidden animate-spin text-indigo-600">⏳</span>
-                <span>⚡ Test Connection</span>
+                <span>⚡ Test Server Connection</span>
               </button>
-
-              <!-- Success/Fail visual badge -->
               <div id="test-connection-badge" class="hidden text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center space-x-1.5 transition-all">
                 <span id="badge-icon">✓</span>
                 <span id="badge-text">Connection Verified</span>
@@ -2047,7 +2011,7 @@
                 </div>
                 <span class="text-[11px] text-slate-600 font-medium">Standard UAE FTA VAT rate is currently exactly 5.0%.</span>
               </div>
-              <p class="text-[10px] text-slate-500 mt-1">Stored in config.json; all historical CSV imports and calculated VAT metrics adapt to this rate.</p>
+              <p class="text-[10px] text-slate-500 mt-1">The application uses the fixed UAE standard VAT rate of 5.0%.</p>
             </div>
           </div>
 
@@ -4989,54 +4953,50 @@
     }
 
     function normalizeDateStr(raw) {
-      if (!raw) return new Date().toISOString().split("T")[0];
-      let s = normalizeArabicNumerals(String(raw).trim().replace(/^['"]|['"]$/g, ''));
-      if (!s || ["#n/a", "null", "none", "nan", "blank", "n/a", "-"].includes(s.toLowerCase())) {
-        return new Date().toISOString().split("T")[0];
-      }
+      if (raw === null || raw === undefined) return "";
+      let s = normalizeArabicNumerals(String(raw).trim().replace(/^['"]|['"]$/g, ""));
+      if (!s || ["#n/a", "null", "none", "nan", "blank", "n/a", "-"].includes(s.toLowerCase())) return "";
 
-      // Check if raw value is an Excel numeric serial date (e.g. 45292 or "45292")
+      // Excel serial date
       const numSerial = Number(s);
-      if (!isNaN(numSerial) && numSerial >= 25000 && numSerial <= 65000 && !s.includes("-") && !s.includes("/") && !s.includes(".")) {
-        try {
-          return excelDateToYmd(numSerial);
-        } catch (e) {
-          // continue to string parsing
-        }
+      if (!isNaN(numSerial) && numSerial >= 25000 && numSerial <= 65000 && !/[\-\/\.]/.test(s)) {
+        try { return excelDateToYmd(numSerial); } catch (e) { return ""; }
       }
 
       if (s.includes("T")) s = s.split("T")[0].trim();
       if (s.includes(" ")) s = s.split(" ")[0].trim();
-
-      // YYYY-MM-DD
       if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
 
-      // DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
-      let matchDmy = s.match(/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})$/);
+      const matchDmy = s.match(/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})$/);
       if (matchDmy) {
-        let p1 = matchDmy[1].padStart(2, '0');
-        let p2 = matchDmy[2].padStart(2, '0');
-        let y = matchDmy[3];
-        if (parseInt(p2, 10) > 12 && parseInt(p1, 10) <= 12) {
-          return `${y}-${p1}-${p2}`;
+        const p1 = parseInt(matchDmy[1], 10);
+        const p2 = parseInt(matchDmy[2], 10);
+        const y = matchDmy[3];
+
+        let day = p1;
+        let month = p2;
+        if (p1 <= 12 && p2 > 12) {
+          month = p1;
+          day = p2;
         }
-        return `${y}-${p2}-${p1}`;
+        if (month < 1 || month > 12 || day < 1 || day > 31) return "";
+
+        return `${y}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       }
 
-      // YYYY/MM/DD or YYYY.MM.DD
-      let matchYmd = s.match(/^(\d{4})[\/\.-](\d{1,2})[\/\.-](\d{1,2})$/);
+      const matchYmd = s.match(/^(\d{4})[\/\.-](\d{1,2})[\/\.-](\d{1,2})$/);
       if (matchYmd) {
-        return `${matchYmd[1]}-${matchYmd[2].padStart(2, '0')}-${matchYmd[3].padStart(2, '0')}`;
+        const year = parseInt(matchYmd[1], 10);
+        const month = parseInt(matchYmd[2], 10);
+        const day = parseInt(matchYmd[3], 10);
+        if (month < 1 || month > 12 || day < 1 || day > 31) return "";
+        return `${matchYmd[1]}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       }
 
-      let parsed = new Date(s);
-      if (!isNaN(parsed.getTime())) {
-        return parsed.toISOString().split("T")[0];
-      }
-      return new Date().toISOString().split("T")[0];
+      return "";
     }
 
-    function cleanDecimalNum(raw) {
+    function cleanDecimalNum(raw)    function cleanDecimalNum(raw) {
       if (raw === null || raw === undefined) return 0.00;
       if (typeof raw === 'number') return isNaN(raw) ? 0.00 : Math.round(raw * 100) / 100;
       let s = normalizeArabicNumerals(String(raw).trim().replace(/^['"]|['"]$/g, ''));
@@ -5059,19 +5019,13 @@
     }
 
     function cleanTrnStr(raw) {
-      if (raw === null || raw === undefined) return { trn: "000000000000000", isValid: true };
-      let s = normalizeArabicNumerals(String(raw).trim().replace(/^['"]|['"]$/g, ''));
-      if (!s) return { trn: "000000000000000", isValid: true };
-      let digits = s.replace(/[^0-9]/g, '');
-      if (digits.length > 0 && digits.length < 15) {
-        digits = digits.padStart(15, '0');
-      } else if (digits.length > 15) {
-        digits = digits.slice(0, 15);
-      }
-      return { trn: digits || s || "000000000000000", isValid: true };
+      if (raw === null || raw === undefined) return { trn: "", isValid: false };
+      const s = normalizeArabicNumerals(String(raw).trim().replace(/^['"]|['"]$/g, ""));
+      const digits = s.replace(/[^0-9]/g, "");
+      return { trn: digits, isValid: /^\d{15}$/.test(digits) };
     }
 
-    function handleFileSelected(event) {
+    function handleFileSelected(event)    function handleFileSelected(event) {
       const file = event.target.files && event.target.files[0];
       if (!file) return;
       processCsvFile(file);
@@ -5172,11 +5126,16 @@
           const rowNum = i + 1;
           let party = partyIdx < row.length ? row[partyIdx].trim() : "";
           if (!party || ["#n/a", "null", "none", "nan", "blank", "n/a"].includes(party.toLowerCase())) {
-            party = "UNKNOWN_SUPPLIER";
+            pendingCsvErrors.push({ rowNum, error: "Supplier name is missing." });
+            continue;
           }
 
           const rawTrn = trnIdx < row.length ? row[trnIdx] : "";
-          const { trn: cleanTrn } = cleanTrnStr(rawTrn);
+          const { trn: cleanTrn, isValid: trnValid } = cleanTrnStr(rawTrn);
+          if (!trnValid) {
+            pendingCsvErrors.push({ rowNum, error: "Supplier TRN must contain exactly 15 digits." });
+            continue;
+          }
 
           validCount++;
           pendingCsvRows.push({ name: party, trn: cleanTrn, rowNum });
@@ -5185,8 +5144,8 @@
           tr.className = "hover:bg-slate-50";
           tr.innerHTML = `
             <td class="py-1.5 px-3 text-slate-500">${rowNum}</td>
-            <td class="py-1.5 px-3 font-bold">${party}</td>
-            <td class="py-1.5 px-3 font-mono text-slate-800">${cleanTrn}</td>
+            <td class="py-1.5 px-3 font-bold">${escapeHtml(party)}</td>
+            <td class="py-1.5 px-3 font-mono text-slate-800">${escapeHtml(cleanTrn)}</td>
             <td class="py-1.5 px-3 text-center">
               <span class="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-emerald-100 text-emerald-800">
                 READY / AUTO-CORRECTED
@@ -5339,12 +5298,27 @@
           }
 
           if (!party || ["#n/a", "null", "none", "nan", "blank", "n/a"].includes(party.toLowerCase())) {
-            party = txType === "purchases" ? "UNKNOWN_SUPPLIER" : "GENERAL_CUSTOMER";
+            if (txType === "sales") {
+              party = "Cash Customer";
+            } else {
+              pendingCsvErrors.push({ rowNum, error: "Purchase row is missing supplier name." });
+              continue;
+            }
           }
 
           const rawTrn = colMap.trn !== undefined && colMap.trn < row.length ? row[colMap.trn] : "";
+          const trnResult = cleanTrnStr(rawTrn);
+          const cleanTrn = trnResult.trn;
+          if (txType === "purchases" && !trnResult.isValid) {
+            pendingCsvErrors.push({ rowNum, error: "Purchase row must contain a valid 15-digit TRN." });
+            continue;
+          }
 
           const normalizedDate = normalizeDateStr(rawDate);
+          if (!normalizedDate) {
+            pendingCsvErrors.push({ rowNum, error: "Transaction date is missing or invalid." });
+            continue;
+          }
           const { trn: cleanTrn } = cleanTrnStr(rawTrn);
 
           let rawMode = colMap.tax_mode !== undefined && colMap.tax_mode < row.length ? row[colMap.tax_mode].toLowerCase() : "inclusive";
@@ -5435,10 +5409,10 @@
           tr.className = "hover:bg-slate-50";
           tr.innerHTML = `
             <td class="py-1.5 px-2 text-center text-slate-500 font-semibold">${rowNum}</td>
-            <td class="py-1.5 px-3">${normalizedDate}</td>
-            <td class="py-1.5 px-3 font-bold text-slate-700">${invNo || '<span class="text-slate-300 font-normal italic">—</span>'}</td>
-            <td class="py-1.5 px-3 truncate max-w-[130px]">${party}</td>
-            <td class="py-1.5 px-3 font-mono text-slate-800">${cleanTrn || '<span class="text-slate-300 italic">—</span>'}</td>
+            <td class="py-1.5 px-3">${escapeHtml(normalizedDate)}</td>
+            <td class="py-1.5 px-3 font-bold text-slate-700">${invNo ? escapeHtml(invNo) : '<span class="text-slate-300 font-normal italic">—</span>'}</td>
+            <td class="py-1.5 px-3 truncate max-w-[130px]">${escapeHtml(party)}</td>
+            <td class="py-1.5 px-3 font-mono text-slate-800">${cleanTrn ? escapeHtml(txType === "sales" ? "000000000000000" : cleanTrn) : '<span class="text-slate-300 italic">—</span>'}</td>
             <td class="py-1.5 px-3 text-right font-bold text-slate-900">AED ${amtBefore.toFixed(2)}</td>
             <td class="py-1.5 px-3 text-right font-semibold ${isExempt ? 'text-amber-600' : 'text-indigo-700'}">
               ${isExempt ? '<span class="inline-block bg-amber-50 text-amber-700 border border-amber-200 px-1 py-0.5 rounded text-[9px] font-bold mr-1">EXEMPT</span>' : ''}AED ${vatAmt.toFixed(2)}
@@ -5454,14 +5428,28 @@
         }
       }
 
-      document.getElementById("preview-total-count").textContent = `${validCount} Rows Loaded`;
-      document.getElementById("preview-valid-badge").textContent = `${validCount} Rows Ready (100%)`;
-      
+      document.getElementById("preview-total-count").textContent = `${validCount + pendingCsvErrors.length} Rows Reviewed`;
+      document.getElementById("preview-valid-badge").textContent = `${validCount} Rows Ready`;
+
       const invBadge = document.getElementById("preview-invalid-badge");
-      invBadge.classList.add("hidden");
+      const invalidCount = pendingCsvErrors.length;
+      if (invalidCount > 0) {
+        invBadge.textContent = `${invalidCount} Invalid`;
+        invBadge.classList.remove("hidden");
+      } else {
+        invBadge.classList.add("hidden");
+      }
 
       const errContainer = document.getElementById("detailed-error-log-container");
-      errContainer.classList.add("hidden");
+      if (invalidCount > 0) {
+        errContainer.classList.remove("hidden");
+        errContainer.innerHTML = pendingCsvErrors.map(err =>
+          `<div class="py-1 text-[11px] text-rose-700">Row ${escapeHtml(err.rowNum)}: ${escapeHtml(err.error)}</div>`
+        ).join("");
+      } else {
+        errContainer.classList.add("hidden");
+        errContainer.innerHTML = "";
+      }
 
       document.getElementById("import-preview-area").classList.remove("hidden");
       checkImportButtonState();
@@ -5469,162 +5457,104 @@
 
     async function submitCsvBatch() {
       const btn = document.getElementById("confirm-import-btn");
+      if (!btn) return;
+
+      if (pendingCsvErrors.length > 0) {
+        showToast("The CSV contains invalid rows. Correct the listed rows before importing.", "error");
+        checkImportButtonState();
+        return;
+      }
+
+      if (!pendingCsvRows.length) {
+        showToast("There are no valid rows to import.", "error");
+        return;
+      }
+
       btn.disabled = true;
       btn.textContent = "Batch Inserting...";
 
       try {
         if (currentImportMode === "suppliers") {
-          // 1. Python webview backend import
-          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.import_csv_suppliers === "function") {
-            const res = await window.pywebview.api.import_csv_suppliers(rawCsvText);
-            if (res && res.success) {
-              closeImportModal();
-              showToast(`Suppliers Imported! ${res.inserted_count} suppliers added/updated.`, "success");
-              if (typeof loadSuppliersList === "function") await loadSuppliersList();
-              return;
-            } else {
-              showToast(res ? res.error : "Suppliers import failed", "error");
-              return;
-            }
-          }
-
-          // 2. Server API import (Direct to Supabase via protected proxy)
           const validRecords = pendingCsvRows.map(r => ({ name: r.name, trn: r.trn }));
-          try {
-            const srvRes = await fetch("/api/import/suppliers", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ rows: validRecords })
-            });
-            if (srvRes.ok) {
-              const resData = await srvRes.json();
-              if (resData.success || resData.inserted_count > 0) {
-                closeImportModal();
-                showToast(`Suppliers Imported! ${resData.inserted_count} suppliers added/updated in Supabase.`, "success");
-                if (typeof loadSuppliersList === "function") await loadSuppliersList();
-                return;
-              }
-            }
-          } catch (e) {
-            console.warn("Server import suppliers fallback:", e);
+
+          const srvRes = await fetch("/api/import/suppliers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rows: validRecords })
+          });
+
+          const result = await srvRes.json().catch(() => ({}));
+          if (!srvRes.ok || !result.success) {
+            throw new Error(result.error || result.message || `Supplier import rejected (HTTP ${srvRes.status}).`);
           }
 
-          // 3. Supabase Client fallback for Suppliers
-          if (window.supabaseClient) {
-            const { data, error } = await window.supabaseClient.from("suppliers").upsert(validRecords, { onConflict: "trn" });
-            if (error) throw error;
-            closeImportModal();
-            showToast(`Successfully imported ${validRecords.length} suppliers to Supabase!`, "success");
-            if (typeof loadSuppliersList === "function") await loadSuppliersList();
-            return;
-          }
-        } else {
-          // Transactions mode - Enforce Mandatory Radio Selection
-          const forcedType = getSelectedImportForcedType();
-          if (!forcedType) {
-            showToast("Please select mandatory routing type (Import Sales or Import Purchases) before submitting.", "error");
-            btn.disabled = false;
-            btn.textContent = "Confirm & Batch Insert into Supabase";
-            return;
-          }
-
-          const totalRowsToImport = pendingCsvRows.length;
-
-          // Helper to reset filters and refresh view so all imported records are immediately visible
-          const onImportSuccess = async (insertedCount) => {
-            closeImportModal();
-            // Automatically switch filter to all_time and disable period sync so imported records with any date are visible
-            currentFilter = "all_time";
-            ledgerPeriodSyncMode = "all";
-            ledgerSearchTerm = "";
-            currentDateFrom = null;
-            currentDateTo = null;
-            const periodSelect = document.getElementById("period-selector");
-            if (periodSelect) periodSelect.value = "all_time";
-            const periodLabel = document.getElementById("current-period-label");
-            if (periodLabel) periodLabel.textContent = "All Records";
-
-            await loadAnalytics("all_time");
-            await loadLiveTransactions();
-
-            const successMsg = `✓ Successfully imported all ${forcedType.toUpperCase()} records: ${insertedCount} of ${totalRowsToImport} inserted into the database!`;
-            showToast(successMsg, "success");
-          };
-
-          // 1. Python webview backend import with forced_type
-          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.import_csv_transactions === "function") {
-            const res = await window.pywebview.api.import_csv_transactions(rawCsvText, forcedType);
-            if (res && res.success) {
-              await onImportSuccess(res.inserted_count || totalRowsToImport);
-              return;
-            } else {
-              showToast(res ? res.error : "Transactions import failed", "error");
-              return;
-            }
-          }
-
-          // 2. Server API import with forced_type (Batch aggressive auto-correction engine)
-          const validRecords = pendingCsvRows.map(r => ({
-            transaction_type: forcedType,
-            transaction_date: r.transaction_date,
-            invoice_no: r.invoice_no,
-            party_name: r.party_name,
-            trn: r.trn,
-            amount_before_tax: r.amount_before_tax,
-            vat_rate: r.vat_rate,
-            vat_amount: r.vat_amount,
-            amount_with_tax: r.amount_with_tax,
-            tax_mode: r.tax_mode
-          }));
-
-          try {
-            const srvRes = await fetch("/api/import/transactions", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ rows: validRecords, forced_type: forcedType, raw_csv: rawCsvText })
-            });
-            if (srvRes.ok) {
-              const resData = await srvRes.json();
-              if (resData.success || resData.inserted_count > 0) {
-                await onImportSuccess(resData.inserted_count || validRecords.length);
-                return;
-              }
-            }
-          } catch (e) {
-            console.warn("Server import transactions fallback:", e);
-          }
-
-          // 3. Supabase Client fallback for Transactions
-          if (window.supabaseClient) {
-            const chunkSize = 200;
-            for (let i = 0; i < validRecords.length; i += chunkSize) {
-              const chunk = validRecords.slice(i, i + chunkSize);
-              const { error } = await window.supabaseClient.from("transactions").insert(chunk);
-              if (error) throw error;
-            }
-            await onImportSuccess(validRecords.length);
-            return;
-          }
+          closeImportModal();
+          const insertedCount = Number(result.inserted ?? result.inserted_count ?? validRecords.length);
+          showToast(`Suppliers Imported Successfully: ${insertedCount} records saved to the database.`, "success");
+          if (typeof loadSuppliersList === "function") await loadSuppliersList();
+          return;
         }
 
-        // 4. Standalone simulation fallback
-        await new Promise(r => setTimeout(r, 600));
+        const forcedType = getSelectedImportForcedType();
+        if (!forcedType) {
+          showToast("Please select Import Sales or Import Purchases before submitting.", "error");
+          return;
+        }
+
+        const validRecords = pendingCsvRows.map(r => ({
+          transaction_type: forcedType,
+          transaction_date: r.transaction_date,
+          invoice_no: r.invoice_no,
+          party_name: r.party_name,
+          trn: r.trn,
+          amount_before_tax: r.amount_before_tax,
+          vat_rate: r.vat_rate,
+          vat_amount: r.vat_amount,
+          amount_with_tax: r.amount_with_tax,
+          tax_mode: r.tax_mode
+        }));
+
+        const srvRes = await fetch("/api/import/transactions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows: validRecords, forced_type: forcedType })
+        });
+
+        const result = await srvRes.json().catch(() => ({}));
+        if (!srvRes.ok || !result.success) {
+          throw new Error(result.error || result.message || `Transaction import rejected (HTTP ${srvRes.status}).`);
+        }
+
+        const insertedCount = Number(result.inserted ?? result.inserted_count ?? 0);
+
         closeImportModal();
         currentFilter = "all_time";
         ledgerPeriodSyncMode = "all";
+        ledgerSearchTerm = "";
+        currentDateFrom = null;
+        currentDateTo = null;
+
+        const periodSelect = document.getElementById("period-selector");
+        if (periodSelect) periodSelect.value = "all_time";
+
+        const periodLabel = document.getElementById("current-period-label");
+        if (periodLabel) periodLabel.textContent = "All Records";
+
         await loadAnalytics("all_time");
         await loadLiveTransactions();
-        showToast(`Import batch complete! ${pendingCsvRows.length} records processed.`, "success");
 
+        showToast(`Successfully imported ${insertedCount} ${forcedType.toUpperCase()} records into the database.`, "success");
       } catch (err) {
-        showToast(err.message || "Failed to process import batch", "error");
+        console.error("[IMPORT] Batch import failed:", err);
+        showToast(err instanceof Error ? err.message : "Batch import failed. No success was reported.", "error");
       } finally {
         btn.disabled = false;
         btn.textContent = "Confirm & Batch Insert into Supabase";
+        checkImportButtonState();
       }
     }
 
-    // Modal helpers
+    // Modal helpers    // Modal helpers
     function openSystemInfoModal() {
       document.getElementById("system-info-modal").classList.remove("hidden");
     }
@@ -6422,33 +6352,38 @@
     }
 
     async function loadSystemSettings() {
-      const urlInput = document.getElementById("settings-supabase-url");
-      const keyInput = document.getElementById("settings-supabase-key");
+      const urlDisplay = document.getElementById("settings-supabase-url-display");
+      const statusEl = document.getElementById("settings-db-status");
       const vatInput = document.getElementById("settings-vat-rate");
 
       try {
-        let settings = null;
-        if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_settings === "function") {
-          settings = await window.pywebview.api.get_settings();
-        } else {
-          const res = await fetch("/api/settings");
-          if (res.ok) {
-            settings = await res.json();
+        const res = await fetch("/api/settings", {
+          headers: { "Accept": "application/json" }
+        });
+        const settings = res.ok ? await res.json() : null;
+
+        if (settings && settings.success) {
+          if (urlDisplay) urlDisplay.textContent = settings.supabase_url || "Configured by deployment";
+          if (vatInput) {
+            vatInput.value = Number(settings.default_vat_rate ?? 5).toFixed(1);
+            currentVatRate = Number(settings.default_vat_rate ?? 5);
           }
         }
 
-        if (settings && settings.success) {
-          if (urlInput && settings.supabase_url) urlInput.value = settings.supabase_url;
-          if (keyInput) {
-            keyInput.value = "";
-            keyInput.placeholder = settings.supabase_key_masked ? `Configured (${settings.supabase_key_masked}) - Leave blank to keep existing` : "Enter Supabase Key / Secret";
-          }
-          if (vatInput && settings.default_vat_rate !== undefined) {
-            vatInput.value = Number(settings.default_vat_rate).toFixed(1);
-            currentVatRate = Number(settings.default_vat_rate);
-          }
+        const statusRes = await fetch("/api/status");
+        const status = await statusRes.json().catch(() => ({}));
+        if (statusEl) {
+          const connected = status.supabase_connected === true;
+          statusEl.textContent = connected ? "Connected" : "Disconnected";
+          statusEl.className = connected
+            ? "text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200"
+            : "text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200";
         }
       } catch (err) {
+        if (statusEl) {
+          statusEl.textContent = "Unavailable";
+          statusEl.className = "text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200";
+        }
         console.warn("Could not fetch system settings:", err);
       }
     }
@@ -6477,44 +6412,31 @@
     }
 
     async function testDatabaseConnection() {
-      const urlInput = document.getElementById("settings-supabase-url");
-      const keyInput = document.getElementById("settings-supabase-key");
       const testBtn = document.getElementById("btn-test-connection");
       const spinner = document.getElementById("test-spinner");
-
-      const url = urlInput ? urlInput.value.trim() : "";
-      const key = keyInput ? keyInput.value.trim() : "";
-
-      if (!url || !key) {
-        showConnectionBadge("error", "URL and Key required");
-        return;
-      }
 
       hideConnectionBadge();
       if (testBtn) testBtn.disabled = true;
       if (spinner) spinner.classList.remove("hidden");
 
       try {
-        let result = null;
-        if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.test_connection === "function") {
-          result = await window.pywebview.api.test_connection(url, key);
-        } else {
-          const res = await fetch("/api/test-connection", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ supabase_url: url, supabase_key: key })
-          });
-          result = await res.json();
-        }
+        const res = await fetch("/api/test-connection", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+          body: "{}"
+        });
+        const result = await res.json().catch(() => ({}));
 
-        if (result && result.status === "success") {
-          showConnectionBadge("success", "Connection Verified");
+        if (res.ok && result.status === "success") {
+          showConnectionBadge("success", "Server connection verified");
         } else {
-          const errMsg = result && result.message ? result.message : "Authentication error";
-          showConnectionBadge("error", errMsg.length > 40 ? errMsg.substring(0, 37) + "..." : errMsg);
+          showConnectionBadge("error", result.message || "Database connection failed");
         }
       } catch (err) {
-        showConnectionBadge("error", "Network / Bridge Error");
+        showConnectionBadge("error", "Network / Server Error");
       } finally {
         if (testBtn) testBtn.disabled = false;
         if (spinner) spinner.classList.add("hidden");
@@ -6524,21 +6446,16 @@
     async function handleSaveSettings(event) {
       if (event) event.preventDefault();
 
-      const urlInput = document.getElementById("settings-supabase-url");
-      const keyInput = document.getElementById("settings-supabase-key");
       const vatInput = document.getElementById("settings-vat-rate");
       const saveBtn = document.getElementById("btn-save-settings");
       const saveSpinner = document.getElementById("save-spinner");
       const alertEl = document.getElementById("settings-modal-alert");
+      const default_vat_rate = vatInput ? Number(vatInput.value) : 5;
 
-      const supabase_url = urlInput ? urlInput.value.trim() : "";
-      const supabase_key = keyInput ? keyInput.value.trim() : "";
-      const default_vat_rate = vatInput ? parseFloat(vatInput.value) : 5.0;
-
-      if (!supabase_url) {
+      if (!Number.isFinite(default_vat_rate) || default_vat_rate !== 5) {
         if (alertEl) {
           alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-rose-50 text-rose-800 border border-rose-200 block";
-          alertEl.textContent = "Please fill in SUPABASE_URL.";
+          alertEl.textContent = "The UAE standard VAT rate is fixed at 5.0%.";
         }
         return;
       }
@@ -6547,43 +6464,37 @@
       if (saveSpinner) saveSpinner.classList.remove("hidden");
 
       try {
-        let saveResult = null;
-        if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.save_settings === "function") {
-          saveResult = await window.pywebview.api.save_settings(supabase_url, supabase_key, default_vat_rate);
-        } else {
-          const res = await fetch("/api/settings", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ supabase_url, supabase_key, default_vat_rate })
-          });
-          saveResult = await res.json();
-        }
+        const res = await fetch("/api/settings", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+          body: JSON.stringify({ default_vat_rate: 5 })
+        });
+        const saveResult = await res.json().catch(() => ({}));
 
-        if (saveResult && saveResult.success) {
-          currentVatRate = default_vat_rate;
+        if (res.ok && saveResult.success) {
+          currentVatRate = 5;
           if (alertEl) {
             alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 block";
-            alertEl.textContent = "✓ Settings saved securely! Database credentials updated and Supabase client reloaded.";
+            alertEl.textContent = "✓ Settings saved. Database connection is managed automatically by Cloud Run.";
           }
-          
-          // Re-check backend bridge status
-          checkBackendBridge();
-
-          // Refresh current analytics view to reflect new configurations
+          await loadSystemSettings();
           setTimeout(() => {
             closeSettingsModal();
             loadAnalytics(currentFilter);
-          }, 1200);
+          }, 600);
         } else {
           if (alertEl) {
             alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-rose-50 text-rose-800 border border-rose-200 block";
-            alertEl.textContent = "✕ Error saving settings: " + (saveResult?.error || saveResult?.message || "Unknown error");
+            alertEl.textContent = "✕ Error saving settings: " + (saveResult.error || saveResult.message || "Unknown error");
           }
         }
       } catch (err) {
         if (alertEl) {
           alertEl.className = "p-3 rounded-xl text-xs font-semibold bg-rose-50 text-rose-800 border border-rose-200 block";
-          alertEl.textContent = "✕ Failed to contact backend: " + (err.message || String(err));
+          alertEl.textContent = "✕ Failed to contact backend.";
         }
       } finally {
         if (saveBtn) saveBtn.disabled = false;
@@ -6592,6 +6503,7 @@
     }
 
     // =========================================================================
+    // DANGER ZONE    // =========================================================================
     // DANGER ZONE: DESTRUCTIVE ACTIONS SUITE
     // =========================================================================
 
