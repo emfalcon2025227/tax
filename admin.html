@@ -5462,7 +5462,7 @@
             }
           }
 
-          // 2. Server API import (Direct to Supabase via protected proxy)
+          // Server API import through the authenticated Express proxy.
           const validRecords = pendingCsvRows.map(r => ({ name: r.name, trn: r.trn }));
           try {
             const srvRes = await fetch("/api/import/suppliers", {
@@ -5470,26 +5470,21 @@
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ rows: validRecords })
             });
-            if (srvRes.ok) {
-              const resData = await srvRes.json();
-              if (resData.success || resData.inserted_count > 0) {
-                closeImportModal();
-                showToast(`Suppliers Imported! ${resData.inserted_count} suppliers added/updated in Supabase.`, "success");
-                if (typeof loadSuppliersList === "function") await loadSuppliersList();
-                return;
-              }
-            }
-          } catch (e) {
-            console.warn("Server import suppliers fallback:", e);
-          }
+            const resData = await srvRes.json().catch(() => ({}));
 
-          // 3. Supabase Client fallback for Suppliers
-          if (window.supabaseClient) {
-            const { data, error } = await window.supabaseClient.from("suppliers").upsert(validRecords, { onConflict: "trn" });
-            if (error) throw error;
-            closeImportModal();
-            showToast(`Successfully imported ${validRecords.length} suppliers to Supabase!`, "success");
-            if (typeof loadSuppliersList === "function") await loadSuppliersList();
+            if (srvRes.ok && resData.success) {
+              closeImportModal();
+              const insertedCount = Number(resData.inserted ?? resData.inserted_count ?? validRecords.length);
+              showToast(`Suppliers Imported! ${insertedCount} suppliers added successfully.`, "success");
+              if (typeof loadSuppliersList === "function") await loadSuppliersList();
+              return;
+            }
+
+            showToast(resData.error || resData.message || `Supplier import rejected (HTTP ${srvRes.status}).`, "error");
+            return;
+          } catch (err) {
+            console.error("Supplier import transport error:", err);
+            showToast("Could not contact the server. No supplier data was reported as imported.", "error");
             return;
           }
         } else {
@@ -5537,7 +5532,7 @@
             }
           }
 
-          // 2. Server API import with forced_type (Batch aggressive auto-correction engine)
+          // Server API import with forced type through the authenticated Express proxy.
           const validRecords = pendingCsvRows.map(r => ({
             transaction_type: forcedType,
             transaction_date: r.transaction_date,
@@ -5555,34 +5550,24 @@
             const srvRes = await fetch("/api/import/transactions", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ rows: validRecords, forced_type: forcedType, raw_csv: rawCsvText })
+              body: JSON.stringify({ rows: validRecords, forced_type: forcedType })
             });
-            if (srvRes.ok) {
-              const resData = await srvRes.json();
-              if (resData.success || resData.inserted_count > 0) {
-                await onImportSuccess(resData.inserted_count || validRecords.length);
-                return;
-              }
-            }
-          } catch (e) {
-            console.warn("Server import transactions fallback:", e);
-          }
+            const resData = await srvRes.json().catch(() => ({}));
 
-          // 3. Supabase Client fallback for Transactions
-          if (window.supabaseClient) {
-            const chunkSize = 200;
-            for (let i = 0; i < validRecords.length; i += chunkSize) {
-              const chunk = validRecords.slice(i, i + chunkSize);
-              const { error } = await window.supabaseClient.from("transactions").insert(chunk);
-              if (error) throw error;
+            if (srvRes.ok && resData.success) {
+              await onImportSuccess(Number(resData.inserted ?? resData.inserted_count ?? validRecords.length));
+              return;
             }
-            await onImportSuccess(validRecords.length);
+
+            showToast(resData.error || resData.message || `Transaction import rejected (HTTP ${srvRes.status}).`, "error");
+            return;
+          } catch (err) {
+            console.error("Transaction import transport error:", err);
+            showToast("Could not contact the server. No transactions were reported as imported.", "error");
             return;
           }
-        }
 
-        // 4. Standalone simulation fallback
-        await new Promise(r => setTimeout(r, 600));
+        // No simulation fallback. A transaction import succeeds only after a real server response.
         closeImportModal();
         currentFilter = "all_time";
         ledgerPeriodSyncMode = "all";
