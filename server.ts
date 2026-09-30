@@ -1142,57 +1142,49 @@ app.delete(["/api/suppliers/:identifier", "/api/suppliers"], requireOwner, async
 });
 
 // Helper to fetch all transactions from Supabase bypassing the PostgREST 1,000 max-rows limit via Range pagination
-async function fetchAllSupabaseTransactions(url: string, key: string, order = "transaction_date.desc", select = "*"): Promise<any[]> {
+async function fetchAllSupabaseTransactions(
+  url: string,
+  key: string,
+  order = "transaction_date.desc",
+  select = "*"
+): Promise<any[]> {
   const allRows: any[] = [];
   const batchSize = 1000;
   let offset = 0;
-  let hasMore = true;
 
-  while (hasMore) {
+  while (true) {
     const end = offset + batchSize - 1;
-    try {
-      const response = await fetch(`${url}/rest/v1/transactions?select=${select}&order=${order}`, {
+    const response = await fetch(
+      \`${url}/rest/v1/transactions?select=\${encodeURIComponent(select)}&order=\${encodeURIComponent(order)}\`,
+      {
         headers: {
           apikey: key,
-          Authorization: `Bearer ${key}`,
-          Range: `${offset}-${end}`,
+          Authorization: \`Bearer \${key}\`,
+          Range: \`\${offset}-\${end}\`,
           "Range-Unit": "items"
-        }
-      });
-
-      if (!response.ok) {
-        if (offset === 0) {
-          const fallbackRes = await fetch(`${url}/rest/v1/transactions?select=${select}&order=${order}`, {
-            headers: { apikey: key, Authorization: `Bearer ${key}` }
-          });
-          if (fallbackRes.ok) {
-            const data = await fallbackRes.json();
-            return Array.isArray(data) ? data : [];
-          }
-        }
-        break;
+        },
+        signal: AbortSignal.timeout(15000)
       }
+    );
 
-      const batch = await response.json();
-      if (Array.isArray(batch) && batch.length > 0) {
-        allRows.push(...batch);
-        if (batch.length < batchSize) {
-          hasMore = false;
-        } else {
-          offset += batchSize;
-        }
-      } else {
-        hasMore = false;
-      }
-    } catch (e) {
-      console.warn("fetchAllSupabaseTransactions pagination error at offset " + offset, e);
-      break;
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(\`Supabase transaction read failed with HTTP \${response.status}: \${errorText}\`);
     }
+
+    const batch = await response.json();
+    if (!Array.isArray(batch) || batch.length === 0) break;
+
+    allRows.push(...batch);
+
+    if (batch.length < batchSize) break;
+    offset += batchSize;
   }
 
   return allRows;
 }
 
+// Top-level Helpers to identify exact duplicate transaction keys
 // Top-level Helpers to compute strict 100% all-column fingerprint for exact duplicate identification
 function normalizeTransactionType(t: any): "sales" | "purchases" {
   const str = String(t || "").toLowerCase().trim();
@@ -1223,19 +1215,13 @@ function normalizeVatRate(raw: any): number {
   return Math.round(val * 100); // normalized to percentage integer (5 for 5%)
 }
 
-function getTransactionStrictFingerprint(tx: any): string {
-  const type = normalizeTransactionType(tx.transaction_type);
-  const date = String(tx.transaction_date || "").split("T")[0].trim();
-  const inv = String(tx.invoice_no || "").replace(/^[#\s]+/, "").trim().toLowerCase();
-  const party = String(tx.party_name || "").replace(/\s+/g, " ").trim().toLowerCase();
-  const trn = normalizeTransactionTrn(tx.trn);
-  const amtBefore = Math.round(Number(tx.amount_before_tax || 0) * 100);
-  const vatRate = normalizeVatRate(tx.vat_rate);
-  const vatAmt = Math.round(Number(tx.vat_amount || 0) * 100);
-  const amtWithTax = Math.round(Number(tx.amount_with_tax || 0) * 100);
-  
-  // All 9 columns must match identically for a record to be considered a duplicate
-  return `${type}:::${date}:::${inv}:::${party}:::${trn}:::${amtBefore}:::${vatRate}:::${vatAmt}:::${amtWithTax}`;
+function getTransactionStrictFingerprint(t: any): string {
+  return [
+    normalizeTransactionType(t?.transaction_type),
+    String(t?.invoice_no ?? "").trim(),
+    normalizeTransactionTrn(t?.trn),
+    String(t?.transaction_date ?? "").split("T")[0]
+  ].join("|");
 }
 
 // 3. Transactions Endpoints
@@ -1326,7 +1312,11 @@ app.get("/api/transactions", requireOwner, async (req: Request, res: Response) =
 
 // Insert Transactions: Both Owner and Clerk can insert transactions with authoritative server-side VAT calculation
 function calculateAuthoritativeTransaction(item: any) {
-  const transactionType = normalizeTransactionType(item?.transaction_type);
+  const rawTransactionType = String(item?.transaction_type || "").trim().toLowerCase();
+  if (rawTransactionType !== "sales" && rawTransactionType !== "purchases") {
+    throw new Error("Transaction type must be sales or purchases.");
+  }
+  const transactionType: "sales" | "purchases" = rawTransactionType;
   const modeRaw = String(item?.tax_mode || "inclusive").trim().toLowerCase();
   if (!["inclusive", "exclusive", "exempt"].includes(modeRaw)) {
     throw new Error("Invalid tax mode. Expected inclusive, exclusive, or exempt.");
@@ -1405,57 +1395,15 @@ app.post("/api/transactions", requireAuth, async (req: Request, res: Response) =
     return res.status(400).json({ success: false, error: "Transaction batch must contain between 1 and 100 items." });
   }
 
-  let cleanedItems: any[];
+  let authoritativeItems: any[];
   try {
-    cleanedItems = items.map(calculateAuthoritativeTransaction);
+    authoritativeItems = items.map(calculateAuthoritativeTransaction);
   } catch (err: any) {
     return res.status(400).json({ success: false, error: err.message || "Invalid transaction payload." });
   }
 
-  // Targeted duplicate validation. Avoid fetching the entire historical ledger for normal entry.
-  const itemsToInsert: any[] = [];
-  for (const item of cleanedItems) {
-    const params = new URLSearchParams({
-      select: "id",
-      transaction_type: `eq.${item.transaction_type}`,
-      transaction_date: `eq.${item.transaction_date}`,
-      invoice_no: `eq.${item.invoice_no}`,
-      party_name: `eq.${item.party_name}`,
-      trn: `eq.${item.trn}`,
-      amount_before_tax: `eq.${item.amount_before_tax}`,
-      vat_rate: `eq.${item.vat_rate}`,
-      vat_amount: `eq.${item.vat_amount}`,
-      amount_with_tax: `eq.${item.amount_with_tax}`,
-      limit: "1"
-    });
-
-    try {
-      const dupRes = await fetch(`${url}/rest/v1/transactions?${params.toString()}`, {
-        headers: { apikey: key, Authorization: `Bearer ${key}` },
-        signal: AbortSignal.timeout(10000)
-      });
-      if (!dupRes.ok) {
-        console.error("[TRANSACTIONS] Duplicate validation failed:", await dupRes.text());
-        return res.status(503).json({ success: false, error: "Database unavailable during duplicate validation." });
-      }
-      const dupRows = await dupRes.json().catch(() => []);
-      if (!Array.isArray(dupRows) || dupRows.length === 0) itemsToInsert.push(item);
-    } catch (err) {
-      console.error("[TRANSACTIONS] Duplicate validation exception:", err);
-      return res.status(503).json({ success: false, error: "Database unavailable during duplicate validation." });
-    }
-  }
-
-  if (itemsToInsert.length === 0) {
-    return res.status(200).json({
-      success: true,
-      inserted: 0,
-      skipped_duplicates: cleanedItems.length,
-      items: []
-    });
-  }
-
   try {
+    // Primary entry is a blind insert: no historical ledger read is required here.
     const response = await fetch(`${url}/rest/v1/transactions`, {
       method: "POST",
       headers: {
@@ -1464,17 +1412,17 @@ app.post("/api/transactions", requireAuth, async (req: Request, res: Response) =
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify(itemsToInsert),
+      body: JSON.stringify(authoritativeItems),
       signal: AbortSignal.timeout(15000)
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("[SERVER] Supabase transaction insert error:", errorText);
+      console.error("[SERVER] Supabase transaction insert rejected:", errorText);
       return res.status(response.status).json({ success: false, error: errorText || "Transaction insert rejected." });
     }
 
-    const data = await response.json();
+    const data = await response.json().catch(() => []);
     return res.status(201).json(data);
   } catch (err) {
     console.error("[SERVER] Transaction insert exception:", err);
