@@ -773,111 +773,142 @@ app.delete("/api/users/:identifier", requireOwner, async (req: Request, res: Res
   }
 });
 
-// 0.1 Settings & Dynamic Supabase Configuration (Owner Only)// 0.1 Settings & Dynamic Supabase Configuration (Owner Only)
-app.get("/api/settings", requireOwner, (_req: Request, res: Response) => {
+// 0.1 Settings (Owner Only)
+// Database credentials are deployment-managed and are never accepted from the browser.
+
+app.get("/api/settings", requireOwner, async (_req: Request, res: Response) => {
   const cfg = readConfigJson();
+  let reportRecipients: string[] = Array.isArray(cfg.report_recipients) ? cfg.report_recipients : [];
+
+  if (isSupabaseConfigured()) {
+    try {
+      const { url, key } = getSupabaseConfig();
+      const response = await fetch(
+        `${url}/rest/v1/settings?id=eq.daily_report_recipients&select=id,value,updated_at`,
+        {
+          headers: { apikey: key, Authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(10000)
+        }
+      );
+
+      if (response.ok) {
+        const rows = await response.json();
+        const value = Array.isArray(rows) && rows[0] ? rows[0].value : null;
+        if (Array.isArray(value)) reportRecipients = value.map((x: any) => String(x).trim()).filter(Boolean);
+      }
+    } catch (err) {
+      console.warn("[SETTINGS] Could not read report recipients from Supabase:", err);
+    }
+  }
+
   return res.json({
     success: true,
-    supabase_url: SUPABASE_URL,
+    supabase_url: SUPABASE_URL || null,
     supabase_key: "",
     supabase_key_masked: "",
     has_supabase_key: Boolean(SUPABASE_KEY),
     default_vat_rate: 5.0,
-    report_recipients: Array.isArray(cfg.report_recipients) ? cfg.report_recipients : []
+    report_recipients: reportRecipients
   });
 });
 
-app.post("/api/settings", requireOwner, (req: Request, res: Response) => {
+app.post("/api/settings", requireOwner, async (req: Request, res: Response) => {
   const requestedRate = req.body?.default_vat_rate;
   const rate = requestedRate === undefined ? 5 : Number(requestedRate);
+
   if (!Number.isFinite(rate) || rate !== 5) {
-    return res.status(400).json({ success: false, error: "The application uses a fixed UAE VAT rate of 5.0%." });
+    return res.status(400).json({
+      success: false,
+      error: "The application uses a fixed UAE VAT rate of 5.0%."
+    });
   }
-  writeConfigJson({ ...readConfigJson(), default_vat_rate: 5 });
+
   return res.json({
     success: true,
-    message: "System settings saved. Database credentials are deployment-managed and cannot be changed from the browser.",
-    default_vat_rate: 5
+    message: "System settings validated. Database credentials are deployment-managed.",
+    default_vat_rate: 5.0
   });
 });
 
-// 0.2 Report Recipients Settings// 0.2 Report Recipients Settings
-app.get("/api/settings/recipients", requireAuth, async (req: Request, res: Response) => {
+// 0.2 Report Recipients Settings
+app.get("/api/settings/recipients", requireAuth, async (_req: Request, res: Response) => {
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
+
   try {
-    const { url, key } = getSupabaseConfig();
-    let recipients: string[] = [];
-    if (url && key) {
-      try {
-        const resp = await fetch(`${url.replace(/\/+$/, "")}/rest/v1/settings?key=eq.daily_report_recipients&select=value`, {
-          headers: { apikey: key, Authorization: `Bearer ${key}` }
-        });
-        if (resp.ok) {
-          const rows = await resp.json();
-          if (Array.isArray(rows) && rows.length > 0 && rows[0].value) {
-            recipients = typeof rows[0].value === "string" ? JSON.parse(rows[0].value) : rows[0].value;
-          }
-        }
-      } catch (e) {
-        console.warn("[WARN] Could not query Supabase settings table:", e);
+    const resp = await fetch(
+      `${url}/rest/v1/settings?id=eq.daily_report_recipients&select=id,value,updated_at`,
+      {
+        headers: { apikey: key, Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(10000)
       }
+    );
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      return res.status(resp.status).json({ success: false, error: errText || "Failed to read report recipients." });
     }
-    if (!recipients || recipients.length === 0) {
-      const cfg = readConfigJson();
-      recipients = cfg.report_recipients || [];
-    }
+
+    const rows = await resp.json();
+    const value = Array.isArray(rows) && rows[0] ? rows[0].value : [];
+    const recipients = Array.isArray(value) ? value.map((x: any) => String(x).trim().toLowerCase()).filter(Boolean) : [];
+
     return res.json({ success: true, recipients });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+  } catch (err) {
+    console.error("[SETTINGS] Recipient read failed:", err);
+    return res.status(503).json({ success: false, error: "Database unavailable." });
   }
 });
 
 app.post("/api/settings/recipients", requireOwner, async (req: Request, res: Response) => {
   try {
-    const rawList = req.body.recipients;
-    let list: string[] = [];
-    if (Array.isArray(rawList)) {
-      list = rawList.map((x: any) => String(x).trim().toLowerCase()).filter(Boolean);
-    } else if (typeof rawList === "string") {
-      list = rawList.split(/[\n,;]+/).map((s: string) => s.trim().toLowerCase()).filter(Boolean);
-    }
-    // Deduplicate
+    const rawList = req.body?.recipients;
+    let list: string[] = Array.isArray(rawList)
+      ? rawList.map((x: any) => String(x).trim().toLowerCase()).filter(Boolean)
+      : typeof rawList === "string"
+        ? rawList.split(/[\n,;]+/).map((s: string) => s.trim().toLowerCase()).filter(Boolean)
+        : [];
+
     list = Array.from(new Set(list));
 
-    // Update local config.json
-    const cfg = readConfigJson();
-    cfg.report_recipients = list;
-    writeConfigJson(cfg);
-
-    // Update Supabase settings table if accessible
-    const { url, key } = getSupabaseConfig();
-    if (url && key) {
-      try {
-        await fetch(`${url.replace(/\/+$/, "")}/rest/v1/settings`, {
-          method: "POST",
-          headers: {
-            apikey: key,
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-            Prefer: "resolution=merge-duplicates"
-          },
-          body: JSON.stringify({
-            key: "daily_report_recipients",
-            value: JSON.stringify(list),
-            updated_at: new Date().toISOString()
-          })
-        });
-      } catch (e) {
-        console.warn("[WARN] Supabase settings update error:", e);
+    for (const email of list) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ success: false, error: `Invalid recipient email: ${email}` });
       }
     }
 
+    const { url, key } = getSupabaseConfig();
+    if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
+
+    const response = await fetch(`${url}/rest/v1/settings?id=eq.daily_report_recipients`, {
+      method: "POST",
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=representation"
+      },
+      body: JSON.stringify({
+        id: "daily_report_recipients",
+        value: list,
+        updated_at: new Date().toISOString()
+      }),
+      signal: AbortSignal.timeout(10000)
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ success: false, error: errText || "Failed to save report recipients." });
+    }
+
     return res.json({ success: true, recipients: list, message: "Recipients saved successfully." });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+  } catch (err) {
+    console.error("[SETTINGS] Recipient update failed:", err);
+    return res.status(503).json({ success: false, error: "Database unavailable." });
   }
 });
 
-// 0.3 Daily Financial Report Cron Endpoint
+// 0.3 Daily Financial Report Cron Endpoint// 0.3 Daily Financial Report Cron Endpoint
 app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, res: Response) => {
   const cronSecret = (process.env.CRON_SECRET || "").trim();
   const authHeader = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
