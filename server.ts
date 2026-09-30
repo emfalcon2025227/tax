@@ -2046,16 +2046,18 @@ app.post("/api/import/suppliers", supplierImportLimiter, requireOwner, async (re
     return res.status(400).json({ success: false, error: "Invalid payload, 'rows' array expected" });
   }
 
-  const cleanedSuppliers = rows.map((r: any) => {
-    let trnRaw = String(r.trn || "").trim();
-    let trnDigits = trnRaw.replace(/\D/g, "");
-    if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-    if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
-    return {
-      name: String(r.name || "UNKNOWN_SUPPLIER").trim(),
-      trn: trnDigits || trnRaw
-    };
-  });
+  let cleanedSuppliers: Array<{ name: string; trn: string }>;
+  try {
+    cleanedSuppliers = rows.map((r: any) => {
+      const name = String(r?.name || "").trim();
+      const trn = String(r?.trn || "").replace(/\D/g, "");
+      if (!name) throw new Error("Supplier name is required for every imported row.");
+      if (!/^\d{15}$/.test(trn)) throw new Error("Every imported supplier must have an exact 15-digit TRN.");
+      return { name, trn };
+    });
+  } catch (err: any) {
+    return res.status(400).json({ success: false, error: err.message || "Invalid supplier import." });
+  }
 
   try {
     const response = await fetch(`${url}/rest/v1/suppliers`, {
