@@ -1675,10 +1675,7 @@ app.post("/api/import/transactions", importLimiter, requireOwner, async (req: Re
       }
     }
 
-    let txDate = String(r.transaction_date || "").split("T")[0];
-    if (!txDate || !/^\d{4}-\d{2}-\d{2}$/.test(txDate)) {
-      txDate = getUAECurrentDate();
-    }
+    const txDate = String(r.transaction_date || "").split("T")[0];
 
     const partyNameRaw = String(r.party_name || "").trim();
     const partyNameLower = partyNameRaw.toLowerCase();
@@ -1692,8 +1689,8 @@ app.post("/api/import/transactions", importLimiter, requireOwner, async (req: Re
       transaction_type: txType,
       transaction_date: txDate,
       invoice_no: invNo,
-      party_name: String(r.party_name || "UNKNOWN_PARTY").trim(),
-      trn: trnDigits || trnRaw || "000000000000000",
+      party_name: String(r.party_name || "").trim(),
+      trn: trnDigits || trnRaw,
       amount_before_tax: isNaN(amountBeforeTax) ? 0.0 : amountBeforeTax,
       vat_rate: isNaN(vatRate) ? 0.05 : vatRate,
       vat_amount: isNaN(vatAmount) ? 0.0 : vatAmount,
@@ -1712,7 +1709,7 @@ app.post("/api/import/transactions", importLimiter, requireOwner, async (req: Re
 
     if (txType === "sales") {
       row.party_name = row.party_name || "Cash Customer";
-      row.trn = /^\d{15}$/.test(String(row.trn || "")) ? String(row.trn) : "000000000000000";
+      row.trn = "000000000000000";
     } else {
       if (!row.party_name) {
         return res.status(400).json({ success: false, error: "Purchase import contains a row with a missing supplier name." });
@@ -1741,7 +1738,8 @@ app.post("/api/import/transactions", importLimiter, requireOwner, async (req: Re
       }
     }
   } catch (dupCheckErr) {
-    console.warn("Duplicate check pre-fetch skipped:", dupCheckErr);
+    console.error("Duplicate check pre-fetch failed:", dupCheckErr);
+    return res.status(503).json({ success: false, error: "Database unavailable during duplicate validation." });
   }
 
   if (rowsToInsert.length === 0) {
