@@ -41,12 +41,7 @@
   </script>
   
   <!-- Tailwind CSS via CDN -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  
-  <!-- Supabase JS Client via CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-
-  <script>
+  <script src="https://cdn.tailwindcss.com"></script> <script>
     tailwind.config = {
       theme: {
         extend: {
@@ -2154,6 +2149,7 @@
 
       // 3. Construct Payload for Supabase (Invoice No and TRN formatted as text)
       const payload = {
+        amount_input: inputAmt,
         transaction_type: transaction_type,
         transaction_date: transaction_date,
         invoice_no: cleanInvoiceNo,
@@ -2492,9 +2488,9 @@
         console.warn("Server status check failed:", err);
       }
 
-      dot.className = "w-2 h-2 rounded-full bg-emerald-500";
-      text.textContent = "Supabase Active (Server Proxy)";
-      syncSuppliersFromSupabase();
+      if (dot) dot.className = "w-2 h-2 rounded-full bg-rose-500";
+      if (text) text.textContent = "Database Unavailable";
+      // Do not simulate or fabricate supplier state while the server reports a database outage.
     }
 
     function openConfigModal() {
