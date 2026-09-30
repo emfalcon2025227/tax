@@ -30,12 +30,7 @@
   </script>
 
   <!-- Tailwind CSS via CDN -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  
-  <!-- Supabase JS Client via CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-
-  <script>
+  <script src="https://cdn.tailwindcss.com"></script> <script>
     tailwind.config = {
       theme: {
         extend: {
@@ -1950,69 +1945,34 @@
           <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3.5">
             <div class="flex items-center justify-between">
               <span class="text-xs font-bold text-slate-900 uppercase tracking-wide">Section A: Database Connection</span>
-              <span class="text-[10px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded font-bold">Supabase PostgreSQL</span>
+              <span class="text-[10px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded font-bold">Server Managed</span>
             </div>
 
-            <!-- SUPABASE_URL -->
-            <div>
-              <label for="settings-supabase-url" class="block text-xs font-bold text-slate-700 mb-1">
-                SUPABASE_URL <span class="text-rose-500">*</span>
-              </label>
-              <input 
-                type="url" 
-                id="settings-supabase-url" 
-                required 
-                placeholder="https://xxxxxxxx.supabase.co" 
-                class="w-full text-xs font-mono px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-              />
-              <p class="text-[10px] text-slate-500 mt-1">Direct project REST endpoint from your Supabase Project Settings.</p>
-            </div>
-
-            <!-- SUPABASE_KEY -->
-            <div>
-              <div class="flex items-center justify-between mb-1">
-                <label for="settings-supabase-key" class="text-xs font-bold text-slate-700">
-                  SUPABASE_KEY <span class="text-rose-500">*</span>
-                </label>
-                <span class="text-[10px] text-slate-500">Visually masked for security</span>
+            <div class="p-3 rounded-lg border border-slate-200 bg-white">
+              <div class="flex items-center justify-between gap-2">
+                <div>
+                  <div class="text-xs font-bold text-slate-800">Supabase PostgreSQL</div>
+                  <div class="text-[10px] text-slate-500 mt-1">
+                    Database connection is configured automatically on the secure server. No URL or key is entered in the browser.
+                  </div>
+                </div>
+                <span id="settings-db-state" class="text-[10px] font-extrabold px-2 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                  Checking...
+                </span>
               </div>
-              <div class="relative">
-                <input 
-                  type="password" 
-                  id="settings-supabase-key" 
-                  required 
-                  placeholder="sb_secret_... or eyJhbGciOi..." 
-                  class="w-full text-xs font-mono px-3 py-2 pr-10 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                />
-                <button 
-                  type="button" 
-                  id="btn-toggle-key-visibility" 
-                  data-onclick="toggleKeyVisibility()" 
-                  class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-1 cursor-pointer"
-                  title="Toggle key visibility"
-                >
-                  <svg id="eye-icon-svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
-                  </svg>
-                </button>
-              </div>
-              <p class="text-[10px] text-slate-500 mt-1">API Key (Anon Public or Service Role) used for backend data synchronization.</p>
             </div>
 
-            <!-- Test Connection Action & Result Badge -->
             <div class="pt-2 flex items-center justify-between flex-wrap gap-2 border-t border-slate-200">
-              <button 
-                type="button" 
-                id="btn-test-connection" 
-                data-onclick="testDatabaseConnection()" 
+              <button
+                type="button"
+                id="btn-test-connection"
+                data-onclick="testDatabaseConnection()"
                 class="px-3.5 py-1.5 text-xs font-bold bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 rounded-lg shadow-2xs transition-colors flex items-center space-x-1.5 cursor-pointer"
               >
                 <span id="test-spinner" class="hidden animate-spin text-indigo-600">⏳</span>
-                <span>⚡ Test Connection</span>
+                <span>⚡ Test Server Connection</span>
               </button>
 
-              <!-- Success/Fail visual badge -->
               <div id="test-connection-badge" class="hidden text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center space-x-1.5 transition-all">
                 <span id="badge-icon">✓</span>
                 <span id="badge-text">Connection Verified</span>
@@ -2862,12 +2822,13 @@
           label = `Current Month (${now.toLocaleString('default', { month: 'long', year: 'numeric' })})`;
           fiscalSubtitle = `Monthly Calendar View (${this.formatDate(start)} - ${this.formatDate(end)})`;
         } else if (key === "current_quarter") {
-          targetFiscalYear = 2026;
-          quarter = 3;
-          start = new Date(2026, 7, 1);
-          end = new Date(2026, 9, 31, 23, 59, 59);
-          label = "FY 2026 - Q3 (Aug, Sep, Oct 2026) - Current";
-          fiscalSubtitle = "Fiscal Year 2026 Q3 Schedule (Aug - Oct 2026)";
+          targetFiscalYear = currentFyInfo.fiscalYear;
+          quarter = currentFyInfo.quarter;
+          const bounds = this.getQuarterBounds(targetFiscalYear, quarter);
+          start = bounds.start;
+          end = bounds.end;
+          label = `FY ${targetFiscalYear} - Q${quarter} (${this.getQuarterMonthNames(quarter)}) - Current`;
+          fiscalSubtitle = `Fiscal Year ${targetFiscalYear} Q${quarter} Schedule (${this.getQuarterMonthNames(quarter)})`;
         } else {
           // All Time History (default)
           start = new Date(2020, 0, 1);
@@ -3761,38 +3722,11 @@
         }
       }
 
-      // 3. Fallback to REAL_UAE_RECORDS ONLY if network/backend failed completely and not wiped
+      // No local/mock supplier fallback is permitted. If the server is unavailable, show a truthful empty state.
       if (!fetchedSuccessfully) {
-        const isWiped = localStorage.getItem("accounting_suppliers_wiped") === "true";
-        if (!isWiped) {
-          suppliersList = (REAL_UAE_RECORDS || []).map(r => ({ name: r.party_name || r.name, trn: r.trn, id: r.id }));
-          try {
-            const saved = localStorage.getItem("accounting_custom_suppliers");
-            if (saved) {
-              const custom = JSON.parse(saved);
-              if (Array.isArray(custom)) {
-                custom.forEach(cs => {
-                  if (cs && cs.name && cs.trn && !suppliersList.some(s => String(s.trn) === String(cs.trn))) {
-                    suppliersList.push({ name: cs.name, trn: cs.trn });
-                  }
-                });
-              }
-            }
-          } catch (e) {}
-        }
+        suppliersList = [];
+        showToast("Unable to load suppliers from the server. No local or simulated supplier data was used.", "error");
       }
-
-      // Always filter out deleted suppliers so they never reappear
-      try {
-        const deletedSuppliers = JSON.parse(localStorage.getItem("accounting_deleted_suppliers") || "[]");
-        if (Array.isArray(deletedSuppliers) && deletedSuppliers.length > 0) {
-          suppliersList = suppliersList.filter(s => 
-            !deletedSuppliers.includes(String(s.trn || "").trim()) &&
-            !deletedSuppliers.includes(String(s.name || s.party_name || "").trim()) &&
-            !deletedSuppliers.includes(String(s.id || "").trim())
-          );
-        }
-      } catch (e) {}
 
       // Update badge counter
       if (countBadge) countBadge.textContent = `${suppliersList.length} Suppliers`;
@@ -3918,29 +3852,6 @@
 
       if (success) {
         showToast(`✓ Supplier '${nameStr}' deleted successfully.`, "success");
-        // Update local arrays
-        const trnStr = String(idOrTrn);
-        const idx = REAL_UAE_RECORDS.findIndex(r => String(r.trn) === trnStr || r.party_name === nameStr);
-        if (idx !== -1) REAL_UAE_RECORDS.splice(idx, 1);
-
-        try {
-          let delList = JSON.parse(localStorage.getItem("accounting_deleted_suppliers") || "[]");
-          if (!delList.includes(trnStr)) delList.push(trnStr);
-          if (nameStr && !delList.includes(nameStr)) delList.push(nameStr);
-          localStorage.setItem("accounting_deleted_suppliers", JSON.stringify(delList));
-        } catch (e) {}
-
-        try {
-          const saved = localStorage.getItem("accounting_custom_suppliers");
-          if (saved) {
-            let list = JSON.parse(saved);
-            if (Array.isArray(list)) {
-              list = list.filter(cs => String(cs.trn) !== trnStr && cs.name !== nameStr);
-              localStorage.setItem("accounting_custom_suppliers", JSON.stringify(list));
-            }
-          }
-        } catch (e) {}
-
         await loadSuppliersModalTable();
       } else {
         const finalError = errorMsg || "Cannot delete supplier. They have existing invoices in the system.";
@@ -4016,13 +3927,11 @@
           }
         }
 
-        if (updated || !errStr) {
-          const targetTrn = oldTrn || editId;
-          const rec = REAL_UAE_RECORDS.find(r => String(r.trn) === String(targetTrn) || r.party_name === name);
-          if (rec) {
-            rec.party_name = name;
-            rec.trn = trn;
-          } else {
+        if (updated) {
+          showToast(`✓ Supplier '${name}' updated successfully!`, "success");
+          resetAdminSupplierForm();
+          await loadSuppliersModalTable();
+        } else {
             REAL_UAE_RECORDS.push({ party_name: name, trn: trn, type: "purchases" });
           }
 
@@ -4053,55 +3962,32 @@
 
       } else {
         // CREATE MODE
-        const exists = REAL_UAE_RECORDS.some(r => String(r.trn) === trn);
-        if (exists) {
-          showToast(`Supplier '${name}' with TRN ${trn} is already registered.`, "info");
+        try {
+          const srvRes = await fetch("/api/suppliers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, trn })
+          });
+          const resData = await srvRes.json().catch(() => ({}));
+          if (!srvRes.ok || resData.success === false) {
+            throw new Error(resData.error || resData.message || `HTTP ${srvRes.status}: Failed to register supplier.`);
+          }
+
+          showToast(`✓ Supplier '${name}' (TRN: ${trn}) successfully registered.`, "success");
           resetAdminSupplierForm();
           await loadSuppliersModalTable();
-          return;
-        }
 
-        try {
-          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.add_supplier === "function") {
-            const res = await window.pywebview.api.add_supplier(name, trn);
-            if (res && !res.success) {
-              if (alertBox) {
-                alertBox.textContent = res.error || "Failed to add supplier.";
-                alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
-              }
-              return;
-            }
-          } else {
-            await fetch("/api/suppliers", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name, trn })
-            });
+          const searchInput = document.getElementById("filter-search-input");
+          if (searchInput) {
+            searchInput.value = name;
+            handleGlobalSearch(name);
           }
         } catch (err) {
-          console.warn("Add supplier server call:", err);
-        }
-
-        // Cache locally
-        try {
-          const key = "accounting_custom_suppliers";
-          const saved = localStorage.getItem(key);
-          const list = saved ? JSON.parse(saved) : [];
-          list.push({ name, trn });
-          localStorage.setItem(key, JSON.stringify(list));
-        } catch (e) {}
-
-        REAL_UAE_RECORDS.push({ party_name: name, trn: trn, type: "purchases" });
-
-        showToast(`Supplier '${name}' (TRN: ${trn}) successfully registered.`, "success");
-        resetAdminSupplierForm();
-        await loadSuppliersModalTable();
-
-        // Filter by the new supplier to show them immediately
-        const searchInput = document.getElementById("filter-search-input");
-        if (searchInput) {
-          searchInput.value = name;
-          handleGlobalSearch(name);
+          if (alertBox) {
+            alertBox.textContent = err.message || "Failed to register supplier.";
+            alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
+          }
+          return;
         }
       }
     }
@@ -4109,67 +3995,77 @@
     async function loadAnalytics(filterKey = currentFilter) {
       currentFilter = filterKey;
       const label = document.getElementById("active-range-label");
-      if (label) label.textContent = "Recalculating...";
+      if (label) label.textContent = "Loading real database data...";
 
       try {
-        if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_analytics === "function") {
-          const res = await window.pywebview.api.get_analytics(
-            filterKey,
-            currentDateFrom || null,
-            currentDateTo || null,
-            currentSearch || null
-          );
-          if (res && res.success) {
-            renderDashboard(res);
-            return;
-          }
-        }
-      } catch (e) {
-        console.warn("Desktop bridge call failed, falling back to client analytics:", e);
-      }
+        let resolved = FiscalCalendar.resolveFilter(filterKey || "all_time");
+        let dateFrom = currentDateFrom || "";
+        let dateTo = currentDateTo || "";
 
-      // 2. Server API query (protected Node.js proxy to Supabase)
-      try {
-        let token = getAuthToken();
-        if (!token) {
-          await checkAdminAuthSession();
-          token = getAuthToken();
+        if (!dateFrom && !dateTo && filterKey !== "all_time") {
+          dateFrom = resolved.displayStart;
+          dateTo = resolved.displayEnd;
         }
-        let resp = await fetch(`/api/transactions?order=transaction_date.desc`, {
-          headers: token ? { "Authorization": `Bearer ${token}` } : {}
+
+        const params = new URLSearchParams();
+        params.set("filter", filterKey || "all_time");
+        if (dateFrom) params.set("date_from", dateFrom);
+        if (dateTo) params.set("date_to", dateTo);
+        if (currentSearch && currentSearch.trim()) params.set("search", currentSearch.trim());
+
+        const resp = await fetch(`/api/analytics?${params.toString()}`);
+        if (resp.status === 401 || resp.status === 403) {
+          showToast("Your administrative session is no longer authorized.", "error");
+          return;
+        }
+
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.success) {
+          throw new Error(data.error || `HTTP ${resp.status}: Analytics request failed.`);
+        }
+
+        const k = data.kpis || {};
+        const transactions = Array.isArray(data.transactions) ? data.transactions : [];
+        const summary = {
+          total_sales_before_tax: Number(k.total_sales_before_tax || 0),
+          output_vat_sales: Number(k.output_vat_sales || 0),
+          total_sales_with_tax: Number(k.total_sales_with_tax || 0),
+          total_purchases_before_tax: Number(k.total_purchases_before_tax || 0),
+          input_vat_purchases: Number(k.input_vat_purchases || 0),
+          total_purchases_with_tax: Number(k.total_purchases_with_tax || 0),
+          net_vat_payable: Number(k.net_vat_payable || 0),
+          net_vat_due: Number(k.net_vat_due || k.net_vat_payable || 0),
+          is_payable: Number(k.net_vat_payable || 0) >= 0,
+          net_profit: Number(k.gross_profit || k.profit_before_tax || 0),
+          profit_before_tax: Number(k.profit_before_tax || k.gross_profit || 0),
+          profit_vat_5: Number(k.profit_vat_5 || 0),
+          profit_after_tax: Number(k.profit_after_tax || 0),
+          profit_with_tax: Number(k.profit_with_tax || k.profit_after_tax || 0),
+          profit_margin_pct: Number(k.profit_margin_pct || 0),
+          transactions_count: Number(k.transaction_count || transactions.length)
+        };
+
+        renderDashboard({
+          success: true,
+          date_range: {
+            start: dateFrom || resolved.displayStart,
+            end: dateTo || resolved.displayEnd
+          },
+          fiscal_label: resolved.fiscalSubtitle,
+          summary,
+          forecasting: {
+            daily_moving_average: 0,
+            last_30_day_profit: 0,
+            forecast_next_month_profit: 0,
+            growth_percentage: 0
+          },
+          transactions
         });
-        if (resp.status === 401) {
-          const reauthOk = await checkAdminAuthSession();
-          if (reauthOk) {
-            const newToken = getAuthToken();
-            resp = await fetch(`/api/transactions?order=transaction_date.desc`, {
-              headers: newToken ? { "Authorization": `Bearer ${newToken}` } : {}
-            });
-          }
-        }
-        if (resp.ok) {
-          const dbTx = await resp.json();
-          if (Array.isArray(dbTx)) {
-            const data = processTransactionsAnalytics(dbTx, filterKey, currentDateFrom, currentDateTo, currentSearch);
-            renderDashboard(data);
-            return;
-          }
-        }
       } catch (err) {
-        console.warn("Server transactions query failed:", err);
-      }
-
-      // Ensure all operations use server proxy; purge any legacy keys
-      localStorage.removeItem("APP_SUPABASE_KEY");
-      localStorage.removeItem("APP_SUPABASE_URL");
-
-      // Client fallback analytics respecting custom fiscal quarters, date range, and search
-      const data = simulateAnalytics(filterKey, currentDateFrom, currentDateTo, currentSearch);
-      renderDashboard(data);
-
-      // Sync ledger if synchronized period mode is active
-      if (typeof applyLedgerFilters === "function" && typeof ledgerPeriodSyncMode !== "undefined" && ledgerPeriodSyncMode === "sync") {
-        applyLedgerFilters(true);
+        console.error("Real analytics load failed:", err);
+        if (label) label.textContent = "Database unavailable";
+        renderDashboard(createEmptyAnalyticsData(filterKey, currentDateFrom, currentDateTo));
+        showToast("Unable to load live analytics from the database. No simulated data was used.", "error");
       }
     }
 
@@ -4643,7 +4539,7 @@
         } else {
           // Client Fallback Excel generation respecting active filters and strict column ordering:
           // Seq | Date | Invoice No | Party Name | TRN | Amount With Tax | VAT 5% | Amount Before Tax
-          const currentData = activeAnalyticsData || simulateAnalytics(currentFilter, currentDateFrom, currentDateTo, currentSearch);
+          const currentData = activeAnalyticsData || createEmptyAnalyticsData(currentFilter, currentDateFrom, currentDateTo, currentSearch);
           const rows = [
             ["Seq", "Date", "Invoice No", "Party Name", "TRN", "Amount With Tax", "VAT 5%", "Amount Before Tax"]
           ];
@@ -5469,158 +5365,88 @@
 
     async function submitCsvBatch() {
       const btn = document.getElementById("confirm-import-btn");
-      btn.disabled = true;
-      btn.textContent = "Batch Inserting...";
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Batch Inserting...";
+      }
 
       try {
         if (currentImportMode === "suppliers") {
-          // 1. Python webview backend import
-          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.import_csv_suppliers === "function") {
-            const res = await window.pywebview.api.import_csv_suppliers(rawCsvText);
-            if (res && res.success) {
-              closeImportModal();
-              showToast(`Suppliers Imported! ${res.inserted_count} suppliers added/updated.`, "success");
-              if (typeof loadSuppliersList === "function") await loadSuppliersList();
-              return;
-            } else {
-              showToast(res ? res.error : "Suppliers import failed", "error");
-              return;
-            }
-          }
-
-          // 2. Server API import (Direct to Supabase via protected proxy)
           const validRecords = pendingCsvRows.map(r => ({ name: r.name, trn: r.trn }));
-          try {
-            const srvRes = await fetch("/api/import/suppliers", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ rows: validRecords })
-            });
-            if (srvRes.ok) {
-              const resData = await srvRes.json();
-              if (resData.success || resData.inserted_count > 0) {
-                closeImportModal();
-                showToast(`Suppliers Imported! ${resData.inserted_count} suppliers added/updated in Supabase.`, "success");
-                if (typeof loadSuppliersList === "function") await loadSuppliersList();
-                return;
-              }
-            }
-          } catch (e) {
-            console.warn("Server import suppliers fallback:", e);
+          const srvRes = await fetch("/api/import/suppliers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rows: validRecords })
+          });
+          const resData = await srvRes.json().catch(() => ({}));
+          if (!srvRes.ok || resData.success === false) {
+            throw new Error(resData.error || resData.message || `HTTP ${srvRes.status}: Supplier import rejected.`);
           }
 
-          // 3. Supabase Client fallback for Suppliers
-          if (window.supabaseClient) {
-            const { data, error } = await window.supabaseClient.from("suppliers").upsert(validRecords, { onConflict: "trn" });
-            if (error) throw error;
-            closeImportModal();
-            showToast(`Successfully imported ${validRecords.length} suppliers to Supabase!`, "success");
-            if (typeof loadSuppliersList === "function") await loadSuppliersList();
-            return;
-          }
-        } else {
-          // Transactions mode - Enforce Mandatory Radio Selection
-          const forcedType = getSelectedImportForcedType();
-          if (!forcedType) {
-            showToast("Please select mandatory routing type (Import Sales or Import Purchases) before submitting.", "error");
-            btn.disabled = false;
-            btn.textContent = "Confirm & Batch Insert into Supabase";
-            return;
-          }
-
-          const totalRowsToImport = pendingCsvRows.length;
-
-          // Helper to reset filters and refresh view so all imported records are immediately visible
-          const onImportSuccess = async (insertedCount) => {
-            closeImportModal();
-            // Automatically switch filter to all_time and disable period sync so imported records with any date are visible
-            currentFilter = "all_time";
-            ledgerPeriodSyncMode = "all";
-            ledgerSearchTerm = "";
-            currentDateFrom = null;
-            currentDateTo = null;
-            const periodSelect = document.getElementById("period-selector");
-            if (periodSelect) periodSelect.value = "all_time";
-            const periodLabel = document.getElementById("current-period-label");
-            if (periodLabel) periodLabel.textContent = "All Records";
-
-            await loadAnalytics("all_time");
-            await loadLiveTransactions();
-
-            const successMsg = `✓ Successfully imported all ${forcedType.toUpperCase()} records: ${insertedCount} of ${totalRowsToImport} inserted into the database!`;
-            showToast(successMsg, "success");
-          };
-
-          // 1. Python webview backend import with forced_type
-          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.import_csv_transactions === "function") {
-            const res = await window.pywebview.api.import_csv_transactions(rawCsvText, forcedType);
-            if (res && res.success) {
-              await onImportSuccess(res.inserted_count || totalRowsToImport);
-              return;
-            } else {
-              showToast(res ? res.error : "Transactions import failed", "error");
-              return;
-            }
-          }
-
-          // 2. Server API import with forced_type (Batch aggressive auto-correction engine)
-          const validRecords = pendingCsvRows.map(r => ({
-            transaction_type: forcedType,
-            transaction_date: r.transaction_date,
-            invoice_no: r.invoice_no,
-            party_name: r.party_name,
-            trn: r.trn,
-            amount_before_tax: r.amount_before_tax,
-            vat_rate: r.vat_rate,
-            vat_amount: r.vat_amount,
-            amount_with_tax: r.amount_with_tax,
-            tax_mode: r.tax_mode
-          }));
-
-          try {
-            const srvRes = await fetch("/api/import/transactions", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ rows: validRecords, forced_type: forcedType, raw_csv: rawCsvText })
-            });
-            if (srvRes.ok) {
-              const resData = await srvRes.json();
-              if (resData.success || resData.inserted_count > 0) {
-                await onImportSuccess(resData.inserted_count || validRecords.length);
-                return;
-              }
-            }
-          } catch (e) {
-            console.warn("Server import transactions fallback:", e);
-          }
-
-          // 3. Supabase Client fallback for Transactions
-          if (window.supabaseClient) {
-            const chunkSize = 200;
-            for (let i = 0; i < validRecords.length; i += chunkSize) {
-              const chunk = validRecords.slice(i, i + chunkSize);
-              const { error } = await window.supabaseClient.from("transactions").insert(chunk);
-              if (error) throw error;
-            }
-            await onImportSuccess(validRecords.length);
-            return;
-          }
+          closeImportModal();
+          showToast(`Suppliers Imported: ${resData.inserted_count || validRecords.length} records successfully processed by the server.`, "success");
+          if (typeof loadSuppliersList === "function") await loadSuppliersList();
+          return;
         }
 
-        // 4. Standalone simulation fallback
-        await new Promise(r => setTimeout(r, 600));
+        const forcedType = getSelectedImportForcedType();
+        if (!forcedType) {
+          throw new Error("Please select mandatory routing type (Import Sales or Import Purchases) before submitting.");
+        }
+
+        const totalRowsToImport = pendingCsvRows.length;
+        const validRecords = pendingCsvRows.map(r => ({
+          amount_input: r.amount_input ?? (r.tax_mode === "inclusive" ? r.amount_with_tax : r.amount_before_tax),
+          transaction_type: forcedType,
+          transaction_date: r.transaction_date,
+          invoice_no: r.invoice_no,
+          party_name: r.party_name,
+          trn: r.trn,
+          amount_before_tax: r.amount_before_tax,
+          vat_rate: r.vat_rate,
+          vat_amount: r.vat_amount,
+          amount_with_tax: r.amount_with_tax,
+          tax_mode: r.tax_mode
+        }));
+
+        const srvRes = await fetch("/api/import/transactions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows: validRecords, forced_type: forcedType })
+        });
+        const resData = await srvRes.json().catch(() => ({}));
+
+        if (!srvRes.ok || resData.success === false) {
+          const detail = Array.isArray(resData.errors)
+            ? resData.errors.slice(0, 10).map(e => `Row ${e.row || "?"}: ${e.error || "Invalid row"}`).join("
+")
+            : (resData.error || resData.message || `HTTP ${srvRes.status}: Transaction import rejected.`);
+          throw new Error(detail);
+        }
+
         closeImportModal();
         currentFilter = "all_time";
         ledgerPeriodSyncMode = "all";
+        ledgerSearchTerm = "";
+        currentDateFrom = "";
+        currentDateTo = "";
+        const periodSelect = document.getElementById("period-selector");
+        if (periodSelect) periodSelect.value = "all_time";
+        const periodLabel = document.getElementById("current-period-label");
+        if (periodLabel) periodLabel.textContent = "All Records";
+
         await loadAnalytics("all_time");
         await loadLiveTransactions();
-        showToast(`Import batch complete! ${pendingCsvRows.length} records processed.`, "success");
 
+        showToast(`✓ Successfully imported ${resData.inserted || totalRowsToImport} real records into the database.`, "success");
       } catch (err) {
-        showToast(err.message || "Failed to process import batch", "error");
+        console.error("Import failed:", err);
+        showToast(err.message || "Failed to process import batch.", "error");
       } finally {
-        btn.disabled = false;
-        btn.textContent = "Confirm & Batch Insert into Supabase";
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "Confirm & Batch Insert into Supabase";
+        }
       }
     }
 
@@ -5655,58 +5481,43 @@
       return Number(amount || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
-    // Authentic UAE Suppliers strictly from the 19 registered records
-    const REAL_UAE_RECORDS = [
-      { party_name: "SEWA", trn: "100394961500003", type: "purchases" },
-      { party_name: "Talabat", trn: "100000978500003", type: "sales" },
-      { party_name: "NATIONAL DAIRY L.L.C", trn: "100303591000003", type: "purchases" },
-      { party_name: "AL HAJJAN FOODSTUFF TRADING", trn: "100023718800003", type: "sales" },
-      { party_name: "Al Futtaim Logistics LLC", trn: "100234567890003", type: "sales" },
-      { party_name: "Emirates National Oil Co", trn: "100456789012003", type: "purchases" },
-      { party_name: "Emaar Properties PJSC", trn: "100345678901003", type: "sales" },
-      { party_name: "Sharaf DG Commercial", trn: "100567890123003", type: "purchases" },
-      { party_name: "Dubai Holding Tech LLC", trn: "100678901234003", type: "sales" },
-      { party_name: "DEWA Utility Services", trn: "100901234567003", type: "purchases" },
-      { party_name: "Etisalat Telecommunications", trn: "100012345678003", type: "purchases" },
-      { party_name: "Du Telecom PJSC", trn: "100123456789003", type: "purchases" },
-      { party_name: "ADNOC Distribution", trn: "100234567891003", type: "purchases" },
-      { party_name: "Lulu Hypermarket LLC", trn: "100345678912003", type: "sales" },
-      { party_name: "Carrefour Majid Al Futtaim", trn: "100456789123003", type: "sales" },
-      { party_name: "Almarai Emirates LLC", trn: "100567891234003", type: "purchases" },
-      { party_name: "Aramex Emirates LLC", trn: "100678912345003", type: "purchases" },
-      { party_name: "Agthia Group PJSC", trn: "100789012345003", type: "sales" },
-      { party_name: "DP World UAE Region", trn: "100890123456003", type: "sales" }
-    ];
+    // Supplier data comes only from the authenticated server API.
+    const REAL_UAE_RECORDS = [];
 
-    // Load custom suppliers saved in localStorage
-    try {
-      const savedCustom = localStorage.getItem("accounting_custom_suppliers");
-      if (savedCustom) {
-        const customList = JSON.parse(savedCustom);
-        if (Array.isArray(customList)) {
-          customList.forEach(cs => {
-            if (cs && cs.name && cs.trn && !REAL_UAE_RECORDS.some(r => r.trn === cs.trn)) {
-              REAL_UAE_RECORDS.push({
-                party_name: cs.name,
-                trn: cs.trn,
-                type: "purchases"
-              });
-            }
-          });
-        }
-      }
-    } catch (e) {
-      console.warn("Error loading custom suppliers:", e);
-    }
-
-    // Analytics simulation for browser preview respecting custom fiscal quarters, dates, and search
-    function simulateAnalytics(filterKey, dateFrom = null, dateTo = null, search = null) {
-      let baseList = (typeof allLedgerTransactions !== "undefined" && Array.isArray(allLedgerTransactions) && allLedgerTransactions.length > 0)
-        ? allLedgerTransactions
-        : [];
-      const result = processTransactionsAnalytics(baseList, filterKey, dateFrom, dateTo, search);
-      activeAnalyticsData = result;
-      return result;
+    function createEmptyAnalyticsData(filterKey, dateFrom = null, dateTo = null) {
+      const resolved = FiscalCalendar.resolveFilter(filterKey || "all_time");
+      const start = dateFrom || resolved.displayStart;
+      const end = dateTo || resolved.displayEnd;
+      return {
+        success: true,
+        date_range: { start, end },
+        fiscal_label: resolved.fiscalSubtitle,
+        summary: {
+          total_sales_before_tax: 0,
+          output_vat_sales: 0,
+          total_sales_with_tax: 0,
+          total_purchases_before_tax: 0,
+          input_vat_purchases: 0,
+          total_purchases_with_tax: 0,
+          net_vat_payable: 0,
+          net_vat_due: 0,
+          is_payable: true,
+          net_profit: 0,
+          profit_before_tax: 0,
+          profit_vat_5: 0,
+          profit_after_tax: 0,
+          profit_with_tax: 0,
+          profit_margin_pct: 0,
+          transactions_count: 0
+        },
+        forecasting: {
+          daily_moving_average: 0,
+          last_30_day_profit: 0,
+          forecast_next_month_profit: 0,
+          growth_percentage: 0
+        },
+        transactions: []
+      };
     }
 
     // =========================================================================
@@ -6734,9 +6545,7 @@
         if (response.ok && result && result.success !== false) {
           showToast(`✓ Supplier '${supplierIdOrTrn}' successfully deleted.`, "success");
           const trnStr = String(supplierIdOrTrn);
-          const idx = REAL_UAE_RECORDS.findIndex(r => String(r.trn) === trnStr || r.party_name === trnStr);
-          if (idx !== -1) REAL_UAE_RECORDS.splice(idx, 1);
-          try {
+                    try {
             let delList = JSON.parse(localStorage.getItem("accounting_deleted_suppliers") || "[]");
             if (!delList.includes(trnStr)) delList.push(trnStr);
             localStorage.setItem("accounting_deleted_suppliers", JSON.stringify(delList));
