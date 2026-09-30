@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.github
+.env
+.env.*
+*.log
+coverage
+.vscode
+.idea
+admin_backend.py
+main.py
+build.py
+main.spec
+test_security.ts
