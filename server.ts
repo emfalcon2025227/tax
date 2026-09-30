@@ -758,43 +758,6 @@ app.post("/api/settings/recipients", requireOwner, async (req: Request, res: Res
   }
 });
 
-// Deduplicate
-    list = Array.from(new Set(list));
-
-    // Update local config.json
-    const cfg = readConfigJson();
-    cfg.report_recipients = list;
-    writeConfigJson(cfg);
-
-    // Update Supabase settings table if accessible
-    const { url, key } = getSupabaseConfig();
-    if (url && key) {
-      try {
-        await fetch(`${url.replace(/\/+$/, "")}/rest/v1/settings`, {
-          method: "POST",
-          headers: {
-            apikey: key,
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-            Prefer: "resolution=merge-duplicates"
-          },
-          body: JSON.stringify({
-            id: "report_recipients",
-            value: JSON.stringify(list),
-            updated_at: new Date().toISOString()
-          })
-        });
-      } catch (e) {
-        console.warn("[WARN] Supabase settings update error:", e);
-      }
-    }
-
-    return res.json({ success: true, recipients: list, message: "Recipients saved successfully." });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
-
 // 0.3 Daily Financial Report Cron Endpoint
 app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, res: Response) => {
   const cronSecret = String(process.env.CRON_SECRET || "").trim();
