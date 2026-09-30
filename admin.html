@@ -6397,192 +6397,23 @@ function computeAnalyticsPreview(filterKey, dateFrom = null, dateTo = null, sear
 
     // 3. Delete Single Supplier
     async function deleteSingleSupplier(identifier) {
-      let supplierIdOrTrn = identifier;
-      if (!supplierIdOrTrn) {
-        supplierIdOrTrn = prompt("Enter Supplier TRN (15 digits) or ID to permanently delete:");
-        if (!supplierIdOrTrn || !supplierIdOrTrn.trim()) return;
-        supplierIdOrTrn = supplierIdOrTrn.trim();
-      }
-
-      const confirmMsg = `⚠️ WARNING: Delete Supplier '${supplierIdOrTrn}'?\n\nIf this supplier has existing transaction invoices, deletion will be blocked by foreign key constraints to preserve audit history.\n\nProceed with deleting supplier?`;
-      if (!confirm(confirmMsg)) return;
-
-      try {
-        console.log(`[DESTRUCTIVE] Deleting single supplier: ${supplierIdOrTrn}`);
-        const token = getAuthToken();
-        const reqHeaders = { "Content-Type": "application/json", "Accept": "application/json" };
-        if (token) reqHeaders["Authorization"] = `Bearer ${token}`;
-
-        const response = await fetch("/api/settings/reset_data", {
-          method: "POST",
-          headers: reqHeaders,
-          body: JSON.stringify({
-            action_type: "single_supplier",
-            supplier_identifier: supplierIdOrTrn,
-            trn: supplierIdOrTrn,
-            id: supplierIdOrTrn
-          })
-        });
-
-        let result = null;
-        try { result = await response.json(); } catch (e) { result = { success: response.ok, error: `Invalid JSON response (HTTP ${response.status})` }; }
-
-        console.log("[DESTRUCTIVE] Server response for deleteSingleSupplier:", result);
-
-        if (response.ok && result && result.success !== false) {
-          showToast(`✓ Supplier '${supplierIdOrTrn}' successfully deleted.`, "success");
-          const trnStr = String(supplierIdOrTrn);
-          const idx = REAL_UAE_RECORDS.findIndex(r => String(r.trn) === trnStr || r.party_name === trnStr);
-          if (idx !== -1) REAL_UAE_RECORDS.splice(idx, 1);
-          try {
-            let delList = JSON.parse(localStorage.getItem("accounting_deleted_suppliers") || "[]");
-            if (!delList.includes(trnStr)) delList.push(trnStr);
-            localStorage.setItem("accounting_deleted_suppliers", JSON.stringify(delList));
-          } catch (e) {}
-          try {
-            const saved = localStorage.getItem("accounting_custom_suppliers");
-            if (saved) {
-              let list = JSON.parse(saved);
-              if (Array.isArray(list)) {
-                list = list.filter(cs => String(cs.trn) !== trnStr && cs.name !== trnStr);
-                localStorage.setItem("accounting_custom_suppliers", JSON.stringify(list));
-              }
-            }
-          } catch (e) {}
-          if (typeof loadSuppliersModalTable === "function") await loadSuppliersModalTable();
-        } else {
-          const errMsg = result?.error || result?.message || `HTTP ${response.status} Failed to delete supplier`;
-          console.error("[DESTRUCTIVE_ERROR] Delete supplier failed:", errMsg);
-          alert(`Cannot Delete Supplier '${supplierIdOrTrn}':\n\n${errMsg}`);
-          showToast(`✕ Error: ${errMsg}`, "error");
-        }
-      } catch (err) {
-        console.error("[DESTRUCTIVE_EXC] Exception deleting supplier:", err);
-        const errDetail = err.message || String(err);
-        alert(`Error Deleting Supplier '${supplierIdOrTrn}':\n\n${errDetail}`);
-        showToast(`✕ Error: ${errDetail}`, "error");
-      }
+      return deleteSupplier(identifier, identifier);
     }
     window.deleteSingleSupplier = deleteSingleSupplier;
 
-    // 4. Reset All Suppliers
+    // Destructive bulk supplier reset is disabled in production.
     async function resetAllSuppliers() {
-      const confirmMsg = `⚠️ WARNING: Are you sure you want to delete ALL registered Suppliers?\n\nThis will clear the entire suppliers directory from the database. If transactions reference suppliers, deletion will be prevented to maintain relational integrity.\n\nProceed?`;
-      if (!confirm(confirmMsg)) return;
-
-      const btn = document.getElementById("btn-reset-suppliers");
-      const spinner = document.getElementById("reset-suppliers-spinner");
-      if (btn) btn.disabled = true;
-      if (spinner) spinner.classList.remove("hidden");
-
-      try {
-        console.log("[DESTRUCTIVE] Resetting all suppliers...");
-        const token = getAuthToken();
-        const reqHeaders = { "Content-Type": "application/json", "Accept": "application/json" };
-        if (token) reqHeaders["Authorization"] = `Bearer ${token}`;
-
-        const response = await fetch("/api/settings/reset_data", {
-          method: "POST",
-          headers: reqHeaders,
-          body: JSON.stringify({ action_type: "all_suppliers" })
-        });
-
-        let result = null;
-        try { result = await response.json(); } catch (e) { result = { success: response.ok, error: `Invalid JSON response (HTTP ${response.status})` }; }
-
-        console.log("[DESTRUCTIVE] Server response for resetAllSuppliers:", result);
-
-        if (response.ok && result && result.success !== false) {
-          showToast("✓ All registered suppliers have been deleted.", "success");
-          REAL_UAE_RECORDS.length = 0;
-          try {
-            localStorage.removeItem("accounting_custom_suppliers");
-            localStorage.setItem("accounting_suppliers_wiped", "true");
-          } catch (e) {}
-          if (typeof loadSuppliersModalTable === "function") await loadSuppliersModalTable();
-        } else {
-          const errMsg = result?.error || result?.message || `HTTP ${response.status} Failed to reset suppliers`;
-          console.error("[DESTRUCTIVE_ERROR] Reset suppliers failed:", errMsg);
-          alert(`Error Resetting Suppliers:\n\n${errMsg}`);
-          showToast(`✕ Error: ${errMsg}`, "error");
-        }
-      } catch (err) {
-        console.error("[DESTRUCTIVE_EXC] Exception resetting suppliers:", err);
-        const errDetail = err.message || String(err);
-        alert(`Error Resetting Suppliers:\n\n${errDetail}`);
-        showToast(`✕ Error: ${errDetail}`, "error");
-      } finally {
-        if (btn) btn.disabled = false;
-        if (spinner) spinner.classList.add("hidden");
-      }
+      showToast("Bulk supplier reset is disabled to protect production data.", "error");
+      return;
     }
     window.resetAllSuppliers = resetAllSuppliers;
 
-    // 5. Factory Reset (Wipe Entire Database)
+    // Factory reset is permanently disabled.
     async function factoryReset() {
-      const confirmMsg = `🚨 FACTORY RESET CRITICAL WARNING:\n\nAre you ABSOLUTELY sure you want to WIPE THE ENTIRE DATABASE?\n\nThis will permanently delete:\n• All Sales Transactions\n• All Purchases Transactions\n• All Registered Suppliers Directory\n\nThis action CANNOT BE UNDONE. Proceed?`;
-      if (!confirm(confirmMsg)) return;
-
-      const doubleCheck = prompt("Final Confirmation: Type 'WIPE' to execute complete database Factory Reset:");
-      if (!doubleCheck || doubleCheck.trim().toUpperCase() !== "WIPE") {
-        showToast("Factory Reset cancelled.", "info");
-        return;
-      }
-
-      const btn = document.getElementById("btn-factory-reset");
-      const spinner = document.getElementById("factory-reset-spinner");
-      if (btn) btn.disabled = true;
-      if (spinner) spinner.classList.remove("hidden");
-
-      try {
-        console.log("[DESTRUCTIVE] Executing complete Factory Reset...");
-        const token = getAuthToken();
-        const reqHeaders = { "Content-Type": "application/json", "Accept": "application/json" };
-        if (token) reqHeaders["Authorization"] = `Bearer ${token}`;
-
-        const response = await fetch("/api/settings/reset_data", {
-          method: "POST",
-          headers: reqHeaders,
-          body: JSON.stringify({ action_type: "factory_reset" })
-        });
-
-        let result = null;
-        try { result = await response.json(); } catch (e) { result = { success: response.ok, error: `Invalid JSON response (HTTP ${response.status})` }; }
-
-        console.log("[DESTRUCTIVE] Server response for factoryReset:", result);
-
-        if (response.ok && result && result.success !== false) {
-          if (Array.isArray(allLedgerTransactions)) {
-            allLedgerTransactions = [];
-          }
-          if (typeof applyLedgerFilters === "function") applyLedgerFilters();
-          alert("🚨 Factory Reset Complete!\n\nAll transactions and suppliers data have been wiped from the system database.");
-          showToast("✓ Factory Reset Complete! Database completely wiped.", "success");
-          if (typeof loadAnalytics === "function") loadAnalytics(currentFilter);
-          if (typeof loadLiveTransactions === "function") await loadLiveTransactions();
-          REAL_UAE_RECORDS.length = 0;
-          try {
-            localStorage.removeItem("accounting_custom_suppliers");
-            localStorage.setItem("accounting_suppliers_wiped", "true");
-          } catch (e) {}
-          if (typeof loadSuppliersModalTable === "function") await loadSuppliersModalTable();
-        } else {
-          const errMsg = result?.error || result?.message || `HTTP ${response.status} Factory Reset failed`;
-          console.error("[DESTRUCTIVE_ERROR] Factory Reset rejected:", errMsg);
-          alert(`Factory Reset Failed:\n\n${errMsg}`);
-          showToast(`✕ Factory Reset Error: ${errMsg}`, "error");
-        }
-      } catch (err) {
-        console.error("[DESTRUCTIVE_EXC] Exception in factoryReset:", err);
-        const errDetail = err.message || String(err);
-        alert(`Factory Reset Exception:\n\n${errDetail}`);
-        showToast(`✕ Factory Reset Failed: ${errDetail}`, "error");
-      } finally {
-        if (btn) btn.disabled = false;
-        if (spinner) spinner.classList.add("hidden");
-      }
+      showToast("Factory reset is permanently disabled. Existing accounting data cannot be wiped from the application.", "error");
+      return;
     }
-    window.factoryReset = factoryReset;
+    window.factoryReset = factoryReset;    window.factoryReset = factoryReset;
     window.handleResetData = resetData;
 
     // =========================================================================
