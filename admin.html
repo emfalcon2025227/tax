@@ -3685,134 +3685,48 @@
       const countBadge = document.getElementById("suppliers-ledger-count");
       if (!tbody) return;
 
-      tbody.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-slate-400 text-xs font-medium">Loading registered suppliers...</td></tr>`;
+      tbody.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-slate-400 text-xs font-medium">Loading registered suppliers...</td></tr>';
 
-      let suppliersList = [];
-      let fetchedSuccessfully = false;
-
-      // 1. Fetch from pywebview desktop bridge if available
       try {
-        if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_suppliers === "function") {
-          const res = await window.pywebview.api.get_suppliers();
-          if (res && res.success && Array.isArray(res.suppliers)) {
-            suppliersList = res.suppliers;
-            fetchedSuccessfully = true;
-          }
+        const token = getAuthToken();
+        const headers = { "Accept": "application/json" };
+        if (token) headers["Authorization"] = "Bearer " + token;
+
+        const response = await fetch("/api/suppliers", { headers });
+        const payload = await response.json().catch(() => []);
+        if (!response.ok) throw new Error(payload?.error || payload?.message || ("HTTP " + response.status));
+
+        const suppliers = Array.isArray(payload) ? payload : (Array.isArray(payload?.suppliers) ? payload.suppliers : []);
+        if (countBadge) countBadge.textContent = suppliers.length + " Suppliers";
+
+        if (suppliers.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-slate-400 text-xs font-medium">No registered suppliers found. Add your first supplier above.</td></tr>';
+          return;
         }
-      } catch (e) {
-        console.warn("pywebview get_suppliers error:", e);
+
+        tbody.innerHTML = suppliers.map((supplier, index) => {
+          const name = String(supplier?.name || "").trim();
+          const trn = String(supplier?.trn || "").trim();
+          const id = supplier?.id == null ? trn : String(supplier.id);
+
+          return '<tr class="hover:bg-slate-50 transition-colors">' +
+            '<td class="py-2.5 px-3 text-center text-slate-500 font-mono text-xs">' + (index + 1) + '</td>' +
+            '<td class="py-2.5 px-3 font-bold text-slate-900">' + escapeHtml(name) + '</td>' +
+            '<td class="py-2.5 px-3 font-mono font-bold text-slate-700 tracking-wider">' + escapeHtml(trn) + '</td>' +
+            '<td class="py-2.5 px-3 text-center">' +
+              '<button type="button" data-action="edit-supplier" data-id="' + escapeHtml(id) + '" data-name="' + escapeHtml(name) + '" data-trn="' + escapeHtml(trn) + '" class="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-emerald-100 text-slate-700 text-xs font-bold border border-slate-200">Edit</button>' +
+              '<button type="button" data-action="delete-supplier" data-id="' + escapeHtml(id) + '" data-name="' + escapeHtml(name) + '" data-trn="' + escapeHtml(trn) + '" class="ml-1 px-2.5 py-1 rounded-md bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold border border-rose-200">Delete</button>' +
+            '</td>' +
+          '</tr>';
+        }).join("");
+      } catch (err) {
+        console.error("[SUPPLIERS] Load failed:", err);
+        if (countBadge) countBadge.textContent = "Unavailable";
+        tbody.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-rose-600 text-xs font-semibold">Supplier directory unavailable. Check the server/database connection.</td></tr>';
       }
-
-      // 2. Fetch from REST API if not fetched yet
-      if (!fetchedSuccessfully) {
-        try {
-          const token = getAuthToken();
-          const headers = {};
-          if (token) headers["Authorization"] = `Bearer ${token}`;
-          const res = await fetch("/api/suppliers", { headers });
-          if (res.ok) {
-            const data = await res.json();
-            if (Array.isArray(data)) {
-              suppliersList = data;
-              fetchedSuccessfully = true;
-            } else if (data && Array.isArray(data.suppliers)) {
-              suppliersList = data.suppliers;
-              fetchedSuccessfully = true;
-            }
-          }
-        } catch (e) {
-          console.warn("/api/suppliers fetch error:", e);
-        }
-      }
-
-      // 3. Fallback to REAL_UAE_RECORDS ONLY if network/backend failed completely and not wiped
-      if (!fetchedSuccessfully) {
-        const isWiped = localStorage.getItem("accounting_suppliers_wiped") === "true";
-        if (!isWiped) {
-          suppliersList = (REAL_UAE_RECORDS || []).map(r => ({ name: r.party_name || r.name, trn: r.trn, id: r.id }));
-          try {
-            const saved = localStorage.getItem("accounting_custom_suppliers");
-            if (saved) {
-              const custom = JSON.parse(saved);
-              if (Array.isArray(custom)) {
-                custom.forEach(cs => {
-                  if (cs && cs.name && cs.trn && !suppliersList.some(s => String(s.trn) === String(cs.trn))) {
-                    suppliersList.push({ name: cs.name, trn: cs.trn });
-                  }
-                });
-              }
-            }
-          } catch (e) {}
-        }
-      }
-
-      // Always filter out deleted suppliers so they never reappear
-      try {
-        const deletedSuppliers = JSON.parse(localStorage.getItem("accounting_deleted_suppliers") || "[]");
-        if (Array.isArray(deletedSuppliers) && deletedSuppliers.length > 0) {
-          suppliersList = suppliersList.filter(s => 
-            !deletedSuppliers.includes(String(s.trn || "").trim()) &&
-            !deletedSuppliers.includes(String(s.name || s.party_name || "").trim()) &&
-            !deletedSuppliers.includes(String(s.id || "").trim())
-          );
-        }
-      } catch (e) {}
-
-      // Update badge counter
-      if (countBadge) countBadge.textContent = `${suppliersList.length} Suppliers`;
-
-      if (suppliersList.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-slate-400 text-xs font-medium">No registered suppliers found. Add your first supplier above.</td></tr>`;
-        return;
-      }
-
-      let html = "";
-      suppliersList.forEach((s, idx) => {
-        const seq = idx + 1;
-        const nameRaw = s.name || s.party_name || "UNKNOWN_SUPPLIER";
-        const trnRaw = s.trn || "000000000000000";
-        const idRaw = s.id ? String(s.id) : trnRaw;
-
-        html += `
-          <tr class="hover:bg-slate-50 transition-colors">
-            <td class="py-2.5 px-3 text-center text-slate-500 font-mono text-xs">${seq}</td>
-            <td class="py-2.5 px-3 font-bold text-slate-900">${escapeHtml(nameRaw)}</td>
-            <td class="py-2.5 px-3 font-mono font-bold text-slate-700 tracking-wider">${escapeHtml(trnRaw)}</td>
-            <td class="py-2.5 px-3 text-center">
-              <div class="flex items-center justify-center space-x-1.5">
-                <button 
-                  type="button" 
-                  data-action="edit-supplier"
-                  data-id="${escapeHtml(idRaw)}"
-                  data-name="${escapeHtml(nameRaw)}"
-                  data-trn="${escapeHtml(trnRaw)}"
-                  class="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-emerald-100 text-slate-700 hover:text-emerald-800 text-xs font-bold transition-colors cursor-pointer flex items-center space-x-1 border border-slate-200 hover:border-emerald-300"
-                  title="Edit supplier details"
-                >
-                  <span class="pointer-events-none">✏️</span>
-                  <span class="pointer-events-none">Edit</span>
-                </button>
-                <button 
-                  type="button" 
-                  data-action="delete-supplier"
-                  data-id="${escapeHtml(idRaw)}"
-                  data-name="${escapeHtml(nameRaw)}"
-                  class="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-rose-100 text-slate-700 hover:text-rose-800 text-xs font-bold transition-colors cursor-pointer flex items-center space-x-1 border border-slate-200 hover:border-rose-300"
-                  title="Delete supplier record"
-                >
-                  <span class="pointer-events-none">🗑️</span>
-                  <span class="pointer-events-none">Delete</span>
-                </button>
-              </div>
-            </td>
-          </tr>
-        `;
-      });
-
-      tbody.innerHTML = html;
     }
 
-    function editSupplier(id, name, trn) {
+    function editSupplier    function editSupplier(id, name, trn) {
       const editIdInput = document.getElementById("admin-modal-supplier-edit-id");
       const oldTrnInput = document.getElementById("admin-modal-supplier-old-trn");
       const nameInput = document.getElementById("admin-modal-supplier-name");
@@ -3915,162 +3829,77 @@
 
     async function handleSaveAdminSupplier(e) {
       e.preventDefault();
+
       const editIdInput = document.getElementById("admin-modal-supplier-edit-id");
       const oldTrnInput = document.getElementById("admin-modal-supplier-old-trn");
       const nameInput = document.getElementById("admin-modal-supplier-name");
       const trnInput = document.getElementById("admin-modal-supplier-trn");
       const alertBox = document.getElementById("admin-modal-supplier-alert");
 
-      const name = (nameInput ? nameInput.value : "").trim();
-      const trn = (trnInput ? trnInput.value : "").trim();
-      const editId = editIdInput ? editIdInput.value : "";
-      const oldTrn = oldTrnInput ? oldTrnInput.value : "";
+      const name = String(nameInput?.value || "").trim();
+      const trn = String(trnInput?.value || "").replace(/\D/g, "");
+      const identifier = String(editIdInput?.value || oldTrnInput?.value || "").trim();
 
       if (!name) {
         if (alertBox) {
-          alertBox.textContent = "Please enter party or trade name.";
+          alertBox.textContent = "Please enter supplier name.";
           alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
         }
         return;
       }
 
-      // TRN format as text validation
-      if (!trn) {
+      if (!/^\d{15}$/.test(trn)) {
         if (alertBox) {
-          alertBox.textContent = "Please enter the Tax Registration Number (TRN).";
+          alertBox.textContent = "TRN must contain exactly 15 digits.";
           alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
         }
-        if (trnInput) trnInput.focus();
         return;
       }
 
-      const isEdit = Boolean(editId || oldTrn);
+      const token = getAuthToken();
+      const headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      };
+      if (token) headers["Authorization"] = "Bearer " + token;
 
-      if (isEdit) {
-        let updated = false;
-        let errStr = null;
+      const endpoint = identifier
+        ? "/api/suppliers/" + encodeURIComponent(identifier)
+        : "/api/suppliers";
 
-        // Desktop call
-        try {
-          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.update_supplier === "function") {
-            const res = await window.pywebview.api.update_supplier(editId || oldTrn, name, trn);
-            if (res && res.success) updated = true;
-            else if (res && res.error) errStr = res.error;
-          }
-        } catch (err) {
-          console.warn("pywebview update_supplier error:", err);
+      try {
+        const response = await fetch(endpoint, {
+          method: identifier ? "PUT" : "POST",
+          headers,
+          body: JSON.stringify(identifier
+            ? { name, trn, old_trn: oldTrnInput?.value || "" }
+            : { name, trn })
+        });
+
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.success === false) {
+          throw new Error(payload.error || payload.message || ("HTTP " + response.status));
         }
 
-        // Web REST API call
-        if (!updated && !errStr) {
-          try {
-            const srvRes = await fetch(`/api/suppliers/${encodeURIComponent(editId || oldTrn)}`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name, trn, old_trn: oldTrn })
-            });
-            const resData = await srvRes.json().catch(() => ({}));
-            if (srvRes.ok && resData.success !== false) {
-              updated = true;
-            } else {
-              errStr = resData.error || resData.message || "Failed to update supplier";
-            }
-          } catch (err) {
-            console.warn("REST update supplier error:", err);
-          }
-        }
+        showToast(
+          identifier
+            ? "Supplier '" + name + "' updated successfully."
+            : "Supplier '" + name + "' registered successfully.",
+          "success"
+        );
 
-        if (updated || !errStr) {
-          const targetTrn = oldTrn || editId;
-          const rec = REAL_UAE_RECORDS.find(r => String(r.trn) === String(targetTrn) || r.party_name === name);
-          if (rec) {
-            rec.party_name = name;
-            rec.trn = trn;
-          } else {
-            REAL_UAE_RECORDS.push({ party_name: name, trn: trn, type: "purchases" });
-          }
-
-          try {
-            const saved = localStorage.getItem("accounting_custom_suppliers");
-            let list = saved ? JSON.parse(saved) : [];
-            if (Array.isArray(list)) {
-              const item = list.find(cs => String(cs.trn) === String(targetTrn));
-              if (item) {
-                item.name = name;
-                item.trn = trn;
-              } else {
-                list.push({ name, trn });
-              }
-              localStorage.setItem("accounting_custom_suppliers", JSON.stringify(list));
-            }
-          } catch (e) {}
-
-          showToast(`✓ Supplier '${name}' updated successfully!`, "success");
-          resetAdminSupplierForm();
-          await loadSuppliersModalTable();
-        } else {
-          if (alertBox) {
-            alertBox.textContent = errStr || "Failed to update supplier.";
-            alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
-          }
-        }
-
-      } else {
-        // CREATE MODE
-        const exists = REAL_UAE_RECORDS.some(r => String(r.trn) === trn);
-        if (exists) {
-          showToast(`Supplier '${name}' with TRN ${trn} is already registered.`, "info");
-          resetAdminSupplierForm();
-          await loadSuppliersModalTable();
-          return;
-        }
-
-        try {
-          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.add_supplier === "function") {
-            const res = await window.pywebview.api.add_supplier(name, trn);
-            if (res && !res.success) {
-              if (alertBox) {
-                alertBox.textContent = res.error || "Failed to add supplier.";
-                alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
-              }
-              return;
-            }
-          } else {
-            await fetch("/api/suppliers", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name, trn })
-            });
-          }
-        } catch (err) {
-          console.warn("Add supplier server call:", err);
-        }
-
-        // Cache locally
-        try {
-          const key = "accounting_custom_suppliers";
-          const saved = localStorage.getItem(key);
-          const list = saved ? JSON.parse(saved) : [];
-          list.push({ name, trn });
-          localStorage.setItem(key, JSON.stringify(list));
-        } catch (e) {}
-
-        REAL_UAE_RECORDS.push({ party_name: name, trn: trn, type: "purchases" });
-
-        showToast(`Supplier '${name}' (TRN: ${trn}) successfully registered.`, "success");
         resetAdminSupplierForm();
         await loadSuppliersModalTable();
-
-        // Filter by the new supplier to show them immediately
-        const searchInput = document.getElementById("filter-search-input");
-        if (searchInput) {
-          searchInput.value = name;
-          handleGlobalSearch(name);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (alertBox) {
+          alertBox.textContent = message;
+          alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
         }
       }
     }
 
-    async function loadAnalytics(filterKey = currentFilter) {
+    async function loadAnalytics    async function loadAnalytics(filterKey = currentFilter) {
       currentFilter = filterKey;
       const label = document.getElementById("active-range-label");
       if (label) label.textContent = "Recalculating...";
