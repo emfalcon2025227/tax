@@ -5298,12 +5298,27 @@
           }
 
           if (!party || ["#n/a", "null", "none", "nan", "blank", "n/a"].includes(party.toLowerCase())) {
-            party = txType === "purchases" ? "UNKNOWN_SUPPLIER" : "GENERAL_CUSTOMER";
+            if (txType === "sales") {
+              party = "Cash Customer";
+            } else {
+              pendingCsvErrors.push({ rowNum, error: "Purchase row is missing supplier name." });
+              continue;
+            }
           }
 
           const rawTrn = colMap.trn !== undefined && colMap.trn < row.length ? row[colMap.trn] : "";
+          const trnResult = cleanTrnStr(rawTrn);
+          const cleanTrn = trnResult.trn;
+          if (txType === "purchases" && !trnResult.isValid) {
+            pendingCsvErrors.push({ rowNum, error: "Purchase row must contain a valid 15-digit TRN." });
+            continue;
+          }
 
           const normalizedDate = normalizeDateStr(rawDate);
+          if (!normalizedDate) {
+            pendingCsvErrors.push({ rowNum, error: "Transaction date is missing or invalid." });
+            continue;
+          }
           const { trn: cleanTrn } = cleanTrnStr(rawTrn);
 
           let rawMode = colMap.tax_mode !== undefined && colMap.tax_mode < row.length ? row[colMap.tax_mode].toLowerCase() : "inclusive";
