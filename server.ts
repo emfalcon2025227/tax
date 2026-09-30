@@ -359,7 +359,9 @@ app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
     );
     if (srvRes.ok) {
       const dbUsers = await srvRes.json();
-      if (Array.isArray(dbUsers) && dbUsers.length > 0) {
+      if (Array.isArray(dbUsers) && dbUsers.length === 0) {
+        authStage = "AUTH_USER_NOT_FOUND";
+      } else if (Array.isArray(dbUsers) && dbUsers.length > 0) {
         for (const usr of dbUsers) {
           const matchedName = String(usr.username || usr.email || "").trim().toLowerCase() === u;
           if (matchedName) {
@@ -511,9 +513,13 @@ app.post("/api/users", userMutationLimiter, requireOwner, async (req: Request, r
       const errText = await response.text().catch(() => "");
       return res.status(response.status).json({ success: false, error: errText || "Failed to create user." });
     }
-    const data = await response.json().catch(() => []);
+    await response.text().catch(() => "");
     auditLog((req as any).user.username, "CREATE_USER", username, "SUCCESS", { role: roleInput });
-    return res.status(201).json({ success: true, message: `User '${username}' registered successfully.`, user: Array.isArray(data) ? data[0] : data });
+    return res.status(201).json({
+      success: true,
+      message: `User '${username}' registered successfully.`,
+      user: { username, role: roleInput === "owner" ? "Owner" : "Clerk" }
+    });
   } catch {
     return res.status(503).json({ success: false, error: "User service is temporarily unavailable." });
   }
@@ -572,7 +578,18 @@ app.put("/api/users/:identifier", userMutationLimiter, requireOwner, async (req:
       return res.status(404).json({ success: false, error: "User not found." });
     }
     auditLog((req as any).user.username, "UPDATE_USER", identifier, "SUCCESS");
-    return res.json({ success: true, message: "User updated successfully.", user: data[0] });
+    const updatedUser = data[0] || {};
+    return res.json({
+      success: true,
+      message: "User updated successfully.",
+      user: {
+        id: updatedUser.id,
+        username: updatedUser.username,
+        email: updatedUser.email,
+        role: updatedUser.role,
+        created_at: updatedUser.created_at
+      }
+    });
   } catch {
     return res.status(503).json({ success: false, error: "User service is temporarily unavailable." });
   }
