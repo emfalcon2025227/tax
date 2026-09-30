@@ -906,90 +906,56 @@
       }
     }
 
-    // ------------------------------------------------------------------------
-    // REAL SUPPLIER DATA (STRICT REQUIREMENT: EXACT 19 REAL RECORDS, NO INVENTED DATA)
-    // ------------------------------------------------------------------------
-    const REAL_SUPPLIERS = [
-      {"name": "AL HAJJAN FOODSTUFF TRADING", "trn": "100023718800003"},
-      {"name": "NATIONAL DAIRY L.L.C", "trn": "100303591000003"},
-      {"name": "Talabat", "trn": "100000978500003"},
-      {"name": "SEWA", "trn": "100394961500003"},
-      {"name": "JOINT TRADING L.L.C SP BR", "trn": "105037098800003"},
-      {"name": "AL TAYEB INTERNATIONAL GENERAL TRADING", "trn": "100228723000003"},
-      {"name": "Bait Al Bahar Household TR. L.L.C", "trn": "100003845300003"},
-      {"name": "PAKYZ AL AKWAB TRADING", "trn": "100461454900003"},
-      {"name": "NATIONAL MARKETING", "trn": "100300236500003"},
-      {"name": "AL SAFA WATER TREATMENT CO LLC", "trn": "100346206400003"},
-      {"name": "AL ZAHMI TRADING EST", "trn": "100226647400003"},
-      {"name": "FEDERAL FOODS L.L.C", "trn": "100283803300003"},
-      {"name": "EMIRATES GALLERY DISCOUNTS", "trn": "100446141200003"},
-      {"name": "HOTPACK PACKAGING LLC", "trn": "100068415900003"},
-      {"name": "MHP FOOD TRADING L.L.C", "trn": "100356894400003"},
-      {"name": "AL MADINA HYPERMAKET L.L.C. BR1", "trn": "100303752800003"},
-      {"name": "NETWORK INTERNATIONAL LLC", "trn": "100204231300003"},
-      {"name": "AL SAFI DRINKING WATER PURIFICATION", "trn": "100230544700003"},
-      {"name": "NESTO HYPER MARKET LLC", "trn": "100247587700003"}
-    ];
-
+    // Supplier data is loaded only from the authenticated server API.
     const QUEUE_STORAGE_KEY = "sdi_offline_queue_v1";
     const REJECTED_STORAGE_KEY = "sdi_rejected_queue_v1";
 
     // Application state
-    let currentTaxMode = "inclusive"; // "inclusive" (default) or "exclusive"
+    let currentTaxMode = "inclusive";
     let supabaseClient = null;
-
-    const CUSTOM_SUPPLIERS_KEY = "accounting_custom_suppliers";
-    let activeSuppliersList = [...REAL_SUPPLIERS];
+    let activeSuppliersList = [];
     let isSupplierDropdownOpen = false;
 
-    // Load locally saved suppliers
+    // Legacy browser supplier caches are intentionally ignored for production authority.
     function loadSavedSuppliers() {
-      try {
-        const deleted = JSON.parse(localStorage.getItem("accounting_deleted_suppliers") || "[]");
-        if (Array.isArray(deleted) && deleted.length > 0) {
-          activeSuppliersList = activeSuppliersList.filter(s => 
-            !deleted.includes(String(s.trn || "").trim()) &&
-            !deleted.includes(String(s.name || "").trim())
-          );
-        }
-
-        const saved = localStorage.getItem(CUSTOM_SUPPLIERS_KEY);
-        if (saved) {
-          const list = JSON.parse(saved);
-          if (Array.isArray(list)) {
-            list.forEach(item => {
-              if (item && item.name && item.trn) {
-                const trnStr = String(item.trn).trim();
-                const nameStr = String(item.name).trim();
-                if (!deleted.includes(trnStr) && !deleted.includes(nameStr) && !activeSuppliersList.some(s => s.trn === item.trn)) {
-                  activeSuppliersList.push(item);
-                }
-              }
-            });
-          }
-        }
-      } catch (e) {
-        console.warn("Error loading custom suppliers from local storage:", e);
-      }
+      activeSuppliersList = [];
+      renderSupplierDropdownItems();
     }
 
-    // Fetch suppliers from Supabase if connected
+    // Fetch suppliers from the authenticated server API only.
     async function syncSuppliersFromSupabase() {
-      if (!supabaseClient) return;
+      if (!supabaseClient) {
+        activeSuppliersList = [];
+        renderSupplierDropdownItems();
+        return;
+      }
+
       try {
         const { data, error } = await supabaseClient.from("suppliers").select("name, trn");
-        if (!error && Array.isArray(data)) {
-          const deleted = JSON.parse(localStorage.getItem("accounting_deleted_suppliers") || "[]");
-          activeSuppliersList = data
-            .map(item => ({ name: item.name, trn: item.trn }))
-            .filter(item => 
-              !deleted.includes(String(item.trn || "").trim()) &&
-              !deleted.includes(String(item.name || "").trim())
-            );
+        if (error || !Array.isArray(data)) {
+          activeSuppliersList = [];
           renderSupplierDropdownItems();
+          showAlert("Database Unavailable", error?.message || "Unable to load suppliers from the server.", "error");
+          return;
         }
+
+        activeSuppliersList = data
+          .map(item => ({
+            name: String(item?.name || "").trim(),
+            trn: String(item?.trn || "").trim()
+          }))
+          .filter(item => item.name && /^\d{15}$/.test(item.trn));
+
+        renderSupplierDropdownItems();
       } catch (err) {
-        console.log("Supabase suppliers sync check:", err);
+        activeSuppliersList = [];
+        renderSupplierDropdownItems();
+        console.warn("Server supplier sync failed:", err);
+        showAlert(
+          "Database Unavailable",
+          "Unable to load suppliers from the server. No local or simulated supplier data was used.",
+          "error"
+        );
       }
     }
 
@@ -1246,9 +1212,9 @@
       }
 
       // TRN format as text validation
-      if (!trn) {
+      if (!/^\d{15}$/.test(trn)) {
         if (alertBox) {
-          alertBox.textContent = "Please enter the Tax Registration Number (TRN).";
+          alertBox.textContent = "TRN must contain exactly 15 numeric digits.";
           alertBox.className = "p-2.5 rounded-xl text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200 block";
         }
         if (trnInput) trnInput.focus();
@@ -1281,27 +1247,13 @@
           return;
         }
 
-        // Cache locally for UI cache only after server-side success
-        try {
-          const saved = localStorage.getItem(CUSTOM_SUPPLIERS_KEY);
-          const list = saved ? JSON.parse(saved) : [];
-          list.push(newSupplier);
-          localStorage.setItem(CUSTOM_SUPPLIERS_KEY, JSON.stringify(list));
-        } catch (err) {
-          console.warn("Failed to cache custom supplier in localStorage:", err);
+        // Refresh from the authoritative server response instead of creating local production state.
+        await syncSuppliersFromSupabase();
+        const newIndex = activeSuppliersList.findIndex(s => String(s.trn) === trn);
+        if (newIndex >= 0) {
+          renderSupplierDropdownItems();
+          selectCustomSupplier(newIndex);
         }
-
-        // Push to activeSuppliersList
-        activeSuppliersList.push(newSupplier);
-
-        // Re-render dropdown list
-        renderSupplierDropdownItems();
-
-        // Auto-populate into main transaction form
-        selectCustomSupplier(activeSuppliersList.length - 1);
-
-        // Hide inline form
-        resetInlineSupplierForm();
 
         // Show success toast
         showAlert("Supplier Registered Successfully", `Supplier '${name}' (TRN: ${trn}) was registered and applied to transaction.`, "success");
@@ -1363,9 +1315,9 @@
       }
 
       // TRN format as text validation
-      if (!trn) {
+      if (!/^\d{15}$/.test(trn)) {
         if (alertBox) {
-          alertBox.textContent = "Please enter the Tax Registration Number (TRN).";
+          alertBox.textContent = "TRN must contain exactly 15 numeric digits.";
           alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
         }
         if (trnInput) trnInput.focus();
@@ -1405,18 +1357,7 @@
           return;
         }
 
-        // Save locally for UI cache only after server-side success
-        try {
-          const saved = localStorage.getItem(CUSTOM_SUPPLIERS_KEY);
-          const list = saved ? JSON.parse(saved) : [];
-          list.push(newSupplier);
-          localStorage.setItem(CUSTOM_SUPPLIERS_KEY, JSON.stringify(list));
-        } catch (err) {
-          console.warn("Failed to cache custom supplier in localStorage:", err);
-        }
-
-        // Push to activeSuppliersList
-        activeSuppliersList.push(newSupplier);
+        await syncSuppliersFromSupabase();
 
         // Close modal
         closeAddSupplierModal();
@@ -1914,23 +1855,34 @@
       }
     }
 
-    function handleOnlineEvent() {
+    async function handleOnlineEvent() {
       const dot = document.getElementById("status-dot");
       const text = document.getElementById("status-text");
-      if (supabaseClient) {
-        dot.className = "w-2 h-2 rounded-full bg-emerald-500";
-        text.textContent = "Supabase Active";
+
+      let connected = false;
+      try {
+        const res = await fetch("/api/status");
+        const status = await res.json().catch(() => ({}));
+        connected = res.ok && status.supabase_connected === true;
+      } catch {}
+
+      if (connected) {
+        if (dot) dot.className = "w-2 h-2 rounded-full bg-emerald-500";
+        if (text) text.textContent = "Supabase Active";
+        await syncSuppliersFromSupabase();
       } else {
-        dot.className = "w-2 h-2 rounded-full bg-blue-400";
-        text.textContent = "Online";
+        if (dot) dot.className = "w-2 h-2 rounded-full bg-rose-500";
+        if (text) text.textContent = "Database Unavailable";
       }
 
       const count = getOfflineQueue().length;
       if (count > 0) {
         showAlert(
-          "Connection Restored",
-          `Device is back online. You have ${count} pending offline invoice${count > 1 ? 's' : ''}. Click "Sync Pending" to sync now.`,
-          "success"
+          connected ? "Connection Restored" : "Server Unavailable",
+          connected
+            ? `Device is back online. You have ${count} pending offline invoice${count > 1 ? "s" : ""}. Click "Sync Pending" to sync now.`
+            : "Internet is available, but the database server is not currently connected.",
+          connected ? "success" : "error"
         );
       }
     }
