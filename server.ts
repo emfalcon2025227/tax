@@ -582,70 +582,43 @@ app.get("/api/auth/me", requireAuth, (req: Request, res: Response) => {
 });
 
 // User Management API Endpoints (Owner Only) - Rate Limited with userMutationLimiter
-app.get("/api/users", requireOwner, async (req: Request, res: Response) => {
+app.get("/api/users", requireOwner, async (_req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  let supabaseUsers: any[] = [];
+  if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
 
   try {
-    const srvRes = await fetch(`${url}/rest/v1/users?select=id,username,role,created_at`, {
-      headers: { apikey: key, Authorization: `Bearer ${key}` }
+    const response = await fetch(`${url}/rest/v1/users?select=id,username,email,role,created_at&order=username.asc`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10000)
     });
-    if (srvRes.ok) {
-      const data = await srvRes.json();
-      if (Array.isArray(data)) supabaseUsers = data;
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ success: false, error: errText || "Failed to load users." });
     }
+    const users = await response.json();
+    return res.json({ success: true, users: Array.isArray(users) ? users : [] });
   } catch (err) {
-    console.warn("[USERS] Fetch users from Supabase notice:", err);
+    console.error("[USERS] Read failed:", err);
+    return res.status(503).json({ success: false, error: "Database unavailable." });
   }
-
-  // Merge users from MEMORY_USERS and Supabase list, keeping usernames unique
-  const mergedMap = new Map<string, any>();
-
-  // 1. Populate with all local memory users
-  MEMORY_USERS.forEach(mu => {
-    mergedMap.set(mu.username.toLowerCase().trim(), {
-      id: mu.id,
-      username: mu.username,
-      role: mu.role,
-      created_at: mu.created_at
-    });
-  });
-
-  // 2. Merge Supabase users
-  supabaseUsers.forEach(su => {
-    if (su && su.username) {
-      const uname = String(su.username).toLowerCase().trim();
-      const existing = mergedMap.get(uname);
-      mergedMap.set(uname, {
-        id: existing?.id || su.id || `user-${Date.now()}`,
-        username: su.username,
-        role: su.role || existing?.role || "Clerk",
-        created_at: su.created_at || existing?.created_at || new Date().toISOString()
-      });
-    }
-  });
-
-  const usersList = Array.from(mergedMap.values());
-  return res.json({ success: true, users: usersList });
 });
 
 app.post("/api/users", userMutationLimiter, requireOwner, async (req: Request, res: Response) => {
-  const { username, role } = req.body;
-  const rawUser = String(username || "").trim();
-  // Passwords MUST NOT be trimmed; preserve exact character sequence entered by user
-  const password = typeof req.body.password === "string" ? req.body.password : "";
-  const rawRole: "Clerk" | "Owner" = String(role || "Owner").trim().toLowerCase() === "clerk" ? "Clerk" : "Owner";
+  const rawUser = String(req.body?.username || "").trim();
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const rawRole: "Clerk" | "Owner" =
+    String(req.body?.role || "Owner").trim().toLowerCase() === "clerk" ? "Clerk" : "Owner";
 
-  // Strict Input Validation
-  if (!rawUser || rawUser.length < 3 || rawUser.length > 50 || !/^[a-zA-Z0-9_.-]+$/.test(rawUser)) {
+  if (!/^[a-zA-Z0-9_.-]{3,50}$/.test(rawUser)) {
     return res.status(400).json({ success: false, error: "Username must be 3-50 alphanumeric characters (or _ . -)." });
   }
-
-  if (!password || password.length < 6) {
+  if (password.length < 6) {
     return res.status(400).json({ success: false, error: "Password must be at least 6 characters long." });
   }
 
   const { url, key } = getSupabaseConfig();
+  if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
+
   const hashedPassword = await hashPassword(password);
   const newUser = {
     username: rawUser,
@@ -654,9 +627,8 @@ app.post("/api/users", userMutationLimiter, requireOwner, async (req: Request, r
     created_at: new Date().toISOString()
   };
 
-  // 1. Try posting to Supabase users table
   try {
-    await fetch(`${url}/rest/v1/users`, {
+    const response = await fetch(`${url}/rest/v1/users`, {
       method: "POST",
       headers: {
         apikey: key,
@@ -664,71 +636,74 @@ app.post("/api/users", userMutationLimiter, requireOwner, async (req: Request, r
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify(newUser)
+      body: JSON.stringify(newUser),
+      signal: AbortSignal.timeout(10000)
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ success: false, error: errText || "Failed to create user." });
+    }
+
+    const created = await response.json().catch(() => []);
+
+    if (!isProd) {
+      const createdObj: PersistedUser = {
+        id: Array.isArray(created) && created[0]?.id ? String(created[0].id) : `user-${Date.now()}`,
+        username: rawUser,
+        passwordHash: hashedPassword,
+        role: rawRole,
+        created_at: newUser.created_at
+      };
+      const existingIdx = MEMORY_USERS.findIndex(u => u.username.toLowerCase() === rawUser.toLowerCase());
+      if (existingIdx !== -1) MEMORY_USERS[existingIdx] = createdObj;
+      else MEMORY_USERS.push(createdObj);
+      savePersistedUsers(MEMORY_USERS.filter(u => !u.id.startsWith("seed-") && !u.id.startsWith("env-")));
+    }
+
+    auditLog((req as any).user.username, "CREATE_USER", rawUser, "SUCCESS", { role: rawRole });
+    return res.status(201).json({
+      success: true,
+      message: `User '${rawUser}' registered successfully.`,
+      user: Array.isArray(created) ? created[0] : created
     });
   } catch (err) {
-    console.warn("[USERS] Insert into Supabase notice:", err);
+    console.error("[USERS] Create failed:", err);
+    return res.status(503).json({ success: false, error: "Database unavailable." });
   }
-
-  // 2. Cache in memory store and persist to users.json disk file
-  const createdObj: PersistedUser = {
-    id: `user-${Date.now()}`,
-    username: rawUser,
-    passwordHash: hashedPassword,
-    role: rawRole,
-    created_at: newUser.created_at
-  };
-
-  const existingIdx = MEMORY_USERS.findIndex(u => u.username.toLowerCase() === rawUser.toLowerCase());
-  if (existingIdx !== -1) {
-    MEMORY_USERS[existingIdx] = createdObj;
-  } else {
-    MEMORY_USERS.push(createdObj);
-  }
-
-  // Persist created/updated users (excluding bootstrap seed entries)
-  savePersistedUsers(MEMORY_USERS.filter(u => !u.id.startsWith("seed-") && !u.id.startsWith("env-")));
-
-  auditLog((req as any).user.username, "CREATE_USER", rawUser, "SUCCESS", { role: rawRole });
-  return res.json({ success: true, message: `User '${rawUser}' registered successfully.` });
 });
 
 app.put("/api/users/:identifier", userMutationLimiter, requireOwner, async (req: Request, res: Response) => {
   const { identifier } = req.params;
-  const { role, username } = req.body;
-  const targetIdStr = String(identifier || "").trim();
-  const password = typeof req.body.password === "string" ? req.body.password : undefined;
-  const rawRole = role ? (String(role).trim().toLowerCase() === "clerk" ? "Clerk" : "Owner") : undefined;
-  const newUsername = username ? String(username).trim() : undefined;
+  const password = typeof req.body?.password === "string" ? req.body.password : undefined;
+  const newUsername = req.body?.username ? String(req.body.username).trim() : undefined;
+  const rawRole: "Clerk" | "Owner" | undefined =
+    req.body?.role ? (String(req.body.role).trim().toLowerCase() === "clerk" ? "Clerk" : "Owner") : undefined;
 
   if (password === undefined && !rawRole && !newUsername) {
     return res.status(400).json({ success: false, error: "No fields provided to update." });
   }
-
   if (password !== undefined && password.length < 6) {
     return res.status(400).json({ success: false, error: "Password must be at least 6 characters long." });
   }
-
-  if (newUsername && (newUsername.length < 3 || newUsername.length > 50 || !/^[a-zA-Z0-9_.-]+$/.test(newUsername))) {
+  if (newUsername && !/^[a-zA-Z0-9_.-]{3,50}$/.test(newUsername)) {
     return res.status(400).json({ success: false, error: "Username must be 3-50 alphanumeric characters (or _ . -)." });
   }
 
   const { url, key } = getSupabaseConfig();
+  if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
+
   const updatePayload: Record<string, any> = {};
   if (password !== undefined) updatePayload.password = await hashPassword(password);
   if (rawRole) updatePayload.role = rawRole;
   if (newUsername) updatePayload.username = newUsername;
 
-  // 1. Try updating in Supabase
   try {
-    const isNumeric = /^\d+$/.test(targetIdStr);
-    let supabaseUrl = "";
-    if (isNumeric) {
-      supabaseUrl = `${url}/rest/v1/users?or=(id.eq.${encodeURIComponent(targetIdStr)},username.eq.${encodeURIComponent(targetIdStr)})`;
-    } else {
-      supabaseUrl = `${url}/rest/v1/users?username.eq.${encodeURIComponent(targetIdStr)}`;
-    }
-    await fetch(supabaseUrl, {
+    const filter = /^\d+$/.test(String(identifier))
+      ? `or=(id.eq.${encodeURIComponent(String(identifier))},username.eq.${encodeURIComponent(String(identifier))})`
+      : `username.eq.${encodeURIComponent(String(identifier))}`;
+
+    const response = await fetch(`${url}/rest/v1/users?${filter}`, {
       method: "PATCH",
       headers: {
         apikey: key,
@@ -736,76 +711,95 @@ app.put("/api/users/:identifier", userMutationLimiter, requireOwner, async (req:
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify(updatePayload)
+      body: JSON.stringify(updatePayload),
+      signal: AbortSignal.timeout(10000)
     });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ success: false, error: errText || "Failed to update user." });
+    }
+
+    const updated = await response.json().catch(() => []);
+    if (!Array.isArray(updated) || updated.length === 0) {
+      return res.status(404).json({ success: false, error: "User not found." });
+    }
+
+    if (!isProd) {
+      const idx = MEMORY_USERS.findIndex(u =>
+        String(u.id).toLowerCase() === String(identifier).toLowerCase() ||
+        u.username.toLowerCase() === String(identifier).toLowerCase()
+      );
+      if (idx !== -1) {
+        if (updatePayload.password) MEMORY_USERS[idx].passwordHash = updatePayload.password;
+        if (rawRole) MEMORY_USERS[idx].role = rawRole;
+        if (newUsername) MEMORY_USERS[idx].username = newUsername;
+        savePersistedUsers(MEMORY_USERS.filter(u => !u.id.startsWith("seed-") && !u.id.startsWith("env-")));
+      }
+    }
+
+    auditLog((req as any).user.username, "UPDATE_USER", String(identifier), "SUCCESS", {
+      role: rawRole,
+      updatedUsername: Boolean(newUsername),
+      updatedPassword: password !== undefined
+    });
+    return res.json({ success: true, message: `User '${newUsername || identifier}' updated successfully.`, user: updated[0] });
   } catch (err) {
-    console.warn("[USERS] Supabase update user notice:", err);
+    console.error("[USERS] Update failed:", err);
+    return res.status(503).json({ success: false, error: "Database unavailable." });
   }
-
-  // 2. Update memory cache and disk store
-  const idx = MEMORY_USERS.findIndex(u => String(u.id).toLowerCase() === targetIdStr.toLowerCase() || u.username.toLowerCase() === targetIdStr.toLowerCase());
-  if (idx !== -1) {
-    if (updatePayload.password) MEMORY_USERS[idx].passwordHash = updatePayload.password;
-    if (rawRole) MEMORY_USERS[idx].role = rawRole;
-    if (newUsername) MEMORY_USERS[idx].username = newUsername;
-    savePersistedUsers(MEMORY_USERS.filter(u => !u.id.startsWith("seed-") && !u.id.startsWith("env-")));
-  }
-
-  auditLog((req as any).user.username, "UPDATE_USER", targetIdStr, "SUCCESS", { role: rawRole, updatedUsername: !!newUsername, updatedPassword: password !== undefined });
-  return res.json({ success: true, message: `User '${newUsername || targetIdStr}' updated successfully.` });
 });
 
 app.delete("/api/users/:identifier", requireOwner, async (req: Request, res: Response) => {
   const { identifier } = req.params;
-  const requestingUser = (req as any).user?.username || (req as any).user?.user || "";
-  const targetIdStr = String(identifier || "").trim().toLowerCase();
-  const reqUserStr = String(requestingUser || "").trim().toLowerCase();
+  const requestingUser = String((req as any).user?.username || "").trim();
 
-  // SELF-LOCKOUT PREVENTION CHECK
-  if (targetIdStr && (targetIdStr === reqUserStr || targetIdStr === "admin" && reqUserStr === "admin")) {
-    return res.status(400).json({
-      success: false,
-      error: "Self-lockout prevented: You cannot delete your own currently logged-in account."
-    });
+  if (!identifier || identifier.toLowerCase() === requestingUser.toLowerCase()) {
+    return res.status(400).json({ success: false, error: "Self-lockout prevented: You cannot delete your own account." });
   }
 
   const { url, key } = getSupabaseConfig();
+  if (!url || !key) return res.status(503).json({ success: false, error: "Database configuration unavailable." });
 
-  // 1. Try deleting from Supabase
   try {
-    const isNumeric = /^\d+$/.test(identifier);
-    let supabaseUrl = "";
-    if (isNumeric) {
-      supabaseUrl = `${url}/rest/v1/users?or=(id.eq.${encodeURIComponent(identifier)},username.eq.${encodeURIComponent(identifier)})`;
-    } else {
-      supabaseUrl = `${url}/rest/v1/users?username.eq.${encodeURIComponent(identifier)}`;
-    }
-    await fetch(supabaseUrl, {
+    const filter = /^\d+$/.test(identifier)
+      ? `or=(id.eq.${encodeURIComponent(identifier)},username.eq.${encodeURIComponent(identifier)})`
+      : `username.eq.${encodeURIComponent(identifier)}`;
+
+    const response = await fetch(`${url}/rest/v1/users?${filter}`, {
       method: "DELETE",
-      headers: { apikey: key, Authorization: `Bearer ${key}` }
+      headers: { apikey: key, Authorization: `Bearer ${key}`, Prefer: "return=representation" },
+      signal: AbortSignal.timeout(10000)
     });
-  } catch (err) {
-    console.warn("[USERS] Delete from Supabase notice:", err);
-  }
 
-  // 2. Remove from memory cache and disk store
-  const idx = MEMORY_USERS.findIndex(u => String(u.id).toLowerCase() === targetIdStr || u.username.toLowerCase() === targetIdStr);
-  if (idx !== -1) {
-    if (MEMORY_USERS[idx].username.toLowerCase() === reqUserStr) {
-      return res.status(400).json({
-        success: false,
-        error: "Self-lockout prevented: You cannot delete your own currently logged-in account."
-      });
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ success: false, error: errText || "Failed to delete user." });
     }
-    MEMORY_USERS.splice(idx, 1);
-    savePersistedUsers(MEMORY_USERS.filter(u => !u.id.startsWith("seed-") && !u.id.startsWith("env-")));
-  }
 
-  console.log(`[USERS] Deleted user '${identifier}' by admin '${requestingUser}'`);
-  return res.json({ success: true, message: `User '${identifier}' deleted successfully.` });
+    const deleted = await response.json().catch(() => []);
+    if (!Array.isArray(deleted) || deleted.length === 0) {
+      return res.status(404).json({ success: false, error: "User not found." });
+    }
+
+    if (!isProd) {
+      const idx = MEMORY_USERS.findIndex(u =>
+        String(u.id).toLowerCase() === identifier.toLowerCase() ||
+        u.username.toLowerCase() === identifier.toLowerCase()
+      );
+      if (idx !== -1) MEMORY_USERS.splice(idx, 1);
+      savePersistedUsers(MEMORY_USERS.filter(u => !u.id.startsWith("seed-") && !u.id.startsWith("env-")));
+    }
+
+    auditLog(requestingUser, "DELETE_USER", identifier, "SUCCESS");
+    return res.json({ success: true, message: `User '${identifier}' deleted successfully.` });
+  } catch (err) {
+    console.error("[USERS] Delete failed:", err);
+    return res.status(503).json({ success: false, error: "Database unavailable." });
+  }
 });
 
-// 0.1 Settings & Dynamic Supabase Configuration (Owner Only)
+// 0.1 Settings & Dynamic Supabase Configuration (Owner Only)// 0.1 Settings & Dynamic Supabase Configuration (Owner Only)
 app.get("/api/settings", requireOwner, (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
   const cfg = readConfigJson();
