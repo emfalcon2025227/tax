@@ -302,23 +302,6 @@ function requireOwner(req: Request, res: Response, next: NextFunction) {
 }
 
 // Helper to read and write config.json
-function readConfigJson() {
-  const cfgPath = path.join(process.cwd(), "config.json");
-  if (fs.existsSync(cfgPath)) {
-    try {
-      return JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
-    } catch {
-      return { default_vat_rate: 5.0 };
-    }
-  }
-  return { default_vat_rate: 5.0 };
-}
-
-function writeConfigJson(data: any) {
-  const cfgPath = path.join(process.cwd(), "config.json");
-  fs.writeFileSync(cfgPath, JSON.stringify(data, null, 2), "utf-8");
-}
-
 // ============================================================================
 // API ROUTES (PROTECTED SERVER-SIDE PROXY FOR SUPABASE WITH RBAC)
 // ============================================================================
@@ -899,13 +882,9 @@ app.get("/api/status", async (_req: Request, res: Response) => {
 // 2. Suppliers Endpoints (Both Owner & Clerk can read and create)
 app.get("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const cfg = readConfigJson();
-  const deletedSuppliers: string[] = Array.isArray(cfg.deleted_suppliers) 
-    ? cfg.deleted_suppliers.map((x: any) => String(x).trim()) 
-    : [];
 
   try {
-    const response = await fetch(`${url}/rest/v1/suppliers?select=*&order=name.asc`, {
+    const response = await fetch(`${url}/rest/v1/suppliers?select=id,name,trn&order=name.asc`, {
       headers: {
         apikey: key,
         Authorization: `Bearer ${key}`
@@ -916,14 +895,7 @@ app.get("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
       return res.status(response.status).json({ error: errText });
     }
     const data = await response.json();
-    const filtered = Array.isArray(data)
-      ? data.filter((s: any) => 
-          !deletedSuppliers.includes(String(s.trn || "").trim()) &&
-          !deletedSuppliers.includes(String(s.name || "").trim()) &&
-          !deletedSuppliers.includes(String(s.id || "").trim())
-        )
-      : data;
-    res.json(filtered);
+    return res.json(Array.isArray(data) ? data : []);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1081,55 +1053,42 @@ app.delete(["/api/suppliers/:identifier", "/api/suppliers"], requireOwner, async
 });
 
 // Helper to fetch all transactions from Supabase bypassing the PostgREST 1,000 max-rows limit via Range pagination
-async function fetchAllSupabaseTransactions(url: string, key: string, order = "transaction_date.desc", select = "*"): Promise<any[]> {
+async function fetchAllSupabaseTransactions(
+  url: string,
+  key: string,
+  order = "transaction_date.desc",
+  select = "*"
+): Promise<any[]> {
   const allRows: any[] = [];
   const batchSize = 1000;
-  let offset = 0;
-  let hasMore = true;
 
-  while (hasMore) {
+  for (let offset = 0; ; offset += batchSize) {
     const end = offset + batchSize - 1;
-    try {
-      const response = await fetch(`${url}/rest/v1/transactions?select=${select}&order=${order}`, {
-        headers: {
-          apikey: key,
-          Authorization: `Bearer ${key}`,
-          Range: `${offset}-${end}`,
-          "Range-Unit": "items"
-        }
-      });
-
-      if (!response.ok) {
-        if (offset === 0) {
-          const fallbackRes = await fetch(`${url}/rest/v1/transactions?select=${select}&order=${order}`, {
-            headers: { apikey: key, Authorization: `Bearer ${key}` }
-          });
-          if (fallbackRes.ok) {
-            const data = await fallbackRes.json();
-            return Array.isArray(data) ? data : [];
-          }
-        }
-        break;
+    const response = await fetch(`${url}/rest/v1/transactions?select=${encodeURIComponent(select)}&order=${encodeURIComponent(order)}`, {
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        Range: `${offset}-${end}`,
+        "Range-Unit": "items"
       }
+    });
 
-      const batch = await response.json();
-      if (Array.isArray(batch) && batch.length > 0) {
-        allRows.push(...batch);
-        if (batch.length < batchSize) {
-          hasMore = false;
-        } else {
-          offset += batchSize;
-        }
-      } else {
-        hasMore = false;
-      }
-    } catch (e) {
-      console.warn("fetchAllSupabaseTransactions pagination error at offset " + offset, e);
-      break;
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      throw new Error(`Supabase transactions query failed (HTTP ${response.status})${errText ? `: ${errText}` : ""}`);
+    }
+
+    const batch = await response.json();
+    if (!Array.isArray(batch)) {
+      throw new Error("Supabase transactions query returned an invalid response.");
+    }
+
+    allRows.push(...batch);
+
+    if (batch.length < batchSize) {
+      return allRows;
     }
   }
-
-  return allRows;
 }
 
 // Top-level Helpers to compute strict 100% all-column fingerprint for exact duplicate identification
