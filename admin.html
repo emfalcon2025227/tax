@@ -4996,7 +4996,7 @@
       return "";
     }
 
-    function cleanDecimalNum(raw)    function cleanDecimalNum(raw) {
+    function cleanDecimalNum(raw) {
       if (raw === null || raw === undefined) return 0.00;
       if (typeof raw === 'number') return isNaN(raw) ? 0.00 : Math.round(raw * 100) / 100;
       let s = normalizeArabicNumerals(String(raw).trim().replace(/^['"]|['"]$/g, ''));
@@ -5025,7 +5025,7 @@
       return { trn: digits, isValid: /^\d{15}$/.test(digits) };
     }
 
-    function handleFileSelected(event)    function handleFileSelected(event) {
+    function handleFileSelected(event) {
       const file = event.target.files && event.target.files[0];
       if (!file) return;
       processCsvFile(file);
@@ -5554,7 +5554,7 @@
       }
     }
 
-    // Modal helpers    // Modal helpers
+    // Modal helpers
     function openSystemInfoModal() {
       document.getElementById("system-info-modal").classList.remove("hidden");
     }
