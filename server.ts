@@ -675,7 +675,7 @@ app.post("/api/settings", requireOwner, async (req: Request, res: Response) => {
   }
 });
 
-app.get("/api/settings/recipients"app.get("/api/settings/recipients", requireAuth, async (_req: Request, res: Response) => {
+app.get("/api/settings/recipients", requireAuth, async (_req: Request, res: Response) => {
   try {
     const { url, key } = getSupabaseConfig();
     const response = await fetch(`${url}/rest/v1/settings?id=eq.report_recipients&select=value&limit=1`, {
@@ -742,67 +742,10 @@ app.post("/api/settings/recipients", requireOwner, async (req: Request, res: Res
 });
 
 // 0.3 Daily Financial Report Cron Endpoint
-app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, res: Response) => {
-  const cronSecret = String(process.env.CRON_SECRET || "").trim();
-  const cronHeader = String(req.headers["x-cron-secret"] || "").trim();
-  let authorized = false;
-
-  if (cronSecret && cronHeader && cronHeader.length === cronSecret.length &&
-      crypto.timingSafeEqual(Buffer.from(cronHeader), Buffer.from(cronSecret))) {
-    authorized = true;
-  } else {
-    const user = getAuthUser(req);
-    authorized = Boolean(user && String(user.role).toLowerCase() === "owner");
-  }
-
-  if (!authorized) {
-    return res.status(cronSecret ? 401 : 503).json({
-      success: false,
-      error: cronSecret ? "Unauthorized." : "Daily report is not securely configured."
-    });
-  }
-
-  if (isProd) {
-    return res.status(503).json({
-      success: false,
-      error: "Daily report is not available in this Node.js Cloud Run build. No simulation or legacy Python fallback is used."
-    });
-  }
-
-  const targetDate = String(req.query.date || req.body?.date || "").trim();
-  const args = ["admin_backend.py", "--daily-report"];
-  if (targetDate) args.push("--date", targetDate);
-
-  const { spawn } = await import("child_process");
-  const py = spawn("python3", args, { cwd: process.cwd() });
-  let stdout = "";
-  let stderr = "";
-
-  py.stdout.on("data", data => { stdout += data.toString(); });
-  py.stderr.on("data", data => { stderr += data.toString(); });
-
-  py.on("close", code => {
-    const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return res.status(parsed.success ? 200 : 500).json(parsed);
-      } catch {}
-    }
-    if (code === 0) {
-      return res.json({ success: true, stdout, message: "Report processed successfully." });
-    }
-    return res.status(500).json({
-      success: false,
-      error: stderr || stdout || `Report process exited with code ${code}.`
-    });
-  });
-
-  py.on("error", err => {
-    return res.status(503).json({
-      success: false,
-      error: `Report service unavailable: ${err.message}`
-    });
+app.all(["/api/cron/daily-report", "/api/daily-report"], requireOwner, async (_req: Request, res: Response) => {
+  return res.status(503).json({
+    success: false,
+    error: "Daily report execution is not included in the Cloud Run build. No simulated or legacy desktop fallback is used."
   });
 });
 
