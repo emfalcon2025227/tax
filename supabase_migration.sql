@@ -117,5 +117,11 @@ EXCEPTION
 END;
 $$;
 
+-- The RPC is server-only. Supabase client roles must not be able to invoke financial imports directly.
+REVOKE ALL ON FUNCTION public.import_transactions_batch(JSONB) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.import_transactions_batch(JSONB) FROM anon;
+REVOKE ALL ON FUNCTION public.import_transactions_batch(JSONB) FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.import_transactions_batch(JSONB) TO service_role;
+
 -- No default users are inserted.
 -- Create the first production Owner through a controlled bootstrap process.
