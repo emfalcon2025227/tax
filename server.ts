@@ -905,46 +905,40 @@ app.post("/api/settings/recipients", requireOwner, async (req: Request, res: Res
 
 // 0.3 Daily Financial Report Cron Endpoint
 app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, res: Response) => {
-  const cronSecret = process.env.CRON_SECRET || "uae_accounting_cron_secret_2026";
-  const authHeader = req.headers.authorization || "";
-  const cronHeader = (req.headers["x-cron-secret"] as string) || "";
-  const qSecret = (req.query.secret as string) || "";
-  const bSecret = (req.body?.secret as string) || "";
+  const cronSecret = (process.env.CRON_SECRET || "").trim();
+  const authHeader = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+  const cronHeader = typeof req.headers["x-cron-secret"] === "string" ? req.headers["x-cron-secret"].trim() : "";
 
   let authorized = false;
   if (authHeader.startsWith("Bearer ")) {
     const token = authHeader.slice(7).trim();
-    if (token === cronSecret) {
-      authorized = true;
-    } else {
-      const user = verifyAuthToken(token);
-      if (user && String(user.role).toLowerCase() === "owner") {
-        authorized = true;
-      }
-    }
+    const user = verifyAuthToken(token);
+    authorized = Boolean(user && String(user.role).toLowerCase() === "owner");
   }
-  if (!authorized && (cronHeader === cronSecret || qSecret === cronSecret || bSecret === cronSecret)) {
-    authorized = true;
+
+  if (!authorized && cronSecret && cronHeader) {
+    const actual = Buffer.from(cronHeader);
+    const expected = Buffer.from(cronSecret);
+    authorized = actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
   }
 
   if (!authorized) {
-    return res.status(401).json({
+    return res.status(401).json({ success: false, error: "Unauthorized." });
+  }
+
+  if (isProd) {
+    return res.status(503).json({
       success: false,
-      error: "Unauthorized: Invalid or missing CRON_SECRET."
+      error: "Daily report worker is not available in the Node.js production container."
     });
   }
 
-  const targetDate = (req.query.date as string) || (req.body?.date as string) || "";
-  const dryRun = String(req.query.dry_run || req.body?.dry_run || "").toLowerCase() === "true" || req.query.dry_run === "1";
+  const targetDate = typeof req.query.date === "string" ? req.query.date : "";
+  const dryRun = String(req.query.dry_run || "").toLowerCase() === "true";
 
-  // Execute admin_backend.py with arguments
   const args = ["admin_backend.py", "--daily-report"];
-  if (targetDate) {
-    args.push("--date", targetDate);
-  }
-  if (dryRun) {
-    args.push("--dry-run");
-  }
+  if (targetDate) args.push("--date", targetDate);
+  if (dryRun) args.push("--dry-run");
 
   const { spawn } = await import("child_process");
   const py = spawn("python3", args, { cwd: process.cwd() });
@@ -955,108 +949,12 @@ app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, re
   py.stderr.on("data", (data) => { stderr += data.toString(); });
 
   py.on("close", (code) => {
-    const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return res.status(parsed.success ? 200 : 500).json(parsed);
-      } catch (e) {
-        // Fall through
-      }
-    }
-    if (code === 0) {
-      return res.json({ success: true, stdout, message: "Report processed successfully" });
-    } else {
-      return res.status(500).json({ success: false, error: stderr || stdout || `Process exited with code ${code}` });
-    }
+    if (code === 0) return res.json({ success: true, stdout });
+    return res.status(500).json({ success: false, error: stderr || stdout || `Process exited with code ${code}` });
   });
 });
 
-app.post("/api/test-connection", requireOwner, async (_req: Request, res: Response) => {
-  const { url, key } = getSupabaseConfig();
-  if (!url || !key) {
-    return res.status(503).json({ status: "error", message: "Server database configuration unavailable." });
-  }
-
-  try {
-    const check = await fetch(`${url}/rest/v1/suppliers?select=name,trn&limit=1`, {
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`
-      },
-      signal: AbortSignal.timeout(10000)
-    });
-
-    if (!check.ok) {
-      const errText = await check.text();
-      return res.status(check.status).json({ status: "error", message: `Supabase returned HTTP ${check.status}: ${errText}` });
-    }
-
-    const data = await check.json().catch(() => []);
-    return res.json({
-      status: "success",
-      message: `Connection verified successfully. Supplier query returned ${Array.isArray(data) ? data.length : 0} row(s).`
-    });
-  } catch (err) {
-    console.error("[DB-CONNECTION] Test failed:", err);
-    return res.status(503).json({ status: "error", message: "Database connection failed." });
-  }
-});
-
-// 1. Health & Connection Status
-let supabaseConnected = false;
-let supabaseLastCheckedAt = 0;
-
-async function verifySupabaseConnection(): Promise<boolean> {
-  if (!isSupabaseConfigured()) {
-    supabaseConnected = false;
-    supabaseLastCheckedAt = Date.now();
-    return false;
-  }
-
-  const { url, key } = getSupabaseConfig();
-  try {
-    const response = await fetch(`${url}/rest/v1/suppliers?select=id&limit=1`, {
-      headers: { apikey: key, Authorization: `Bearer ${key}` },
-      signal: AbortSignal.timeout(10000)
-    });
-    supabaseConnected = response.ok;
-    supabaseLastCheckedAt = Date.now();
-    return supabaseConnected;
-  } catch (err) {
-    supabaseConnected = false;
-    supabaseLastCheckedAt = Date.now();
-    console.warn("[SUPABASE] Connectivity check failed:", err instanceof Error ? err.message : String(err));
-    return false;
-  }
-}
-
-app.get("/api/health", (_req: Request, res: Response) => {
-  return res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
-});
-
-app.get("/_health", async (_req: Request, res: Response) => {
-  const connected = await verifySupabaseConnection();
-  return res.status(connected ? 200 : 503).json({
-    status: connected ? "healthy" : "degraded",
-    supabase_connected: connected,
-    checked_at: new Date(supabaseLastCheckedAt).toISOString()
-  });
-});
-
-app.get("/api/status", async (_req: Request, res: Response) => {
-  const connected = await verifySupabaseConnection();
-  return res.status(connected ? 200 : 503).json({
-    status: connected ? "ok" : "degraded",
-    supabase_connected: connected,
-    url: SUPABASE_URL ? SUPABASE_URL.replace(/^https?:\/\//, "").replace(/\/$/, "") : null
-  });
-});
-
-void verifySupabaseConnection();
-setInterval(() => { void verifySupabaseConnection(); }, 5 * 60 * 1000);
-
-// 2. Suppliers Endpoints// 2. Suppliers Endpoints (Both Owner & Clerk can read and create)
+// 2. Suppliers Endpoints// 2. Suppliers Endpoints// 2. Suppliers Endpoints (Both Owner & Clerk can read and create)
 app.get("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
   const cfg = readConfigJson();
@@ -1803,6 +1701,31 @@ app.post("/api/import/transactions", importLimiter, requireOwner, async (req: Re
       tax_mode: taxMode
     };
   });
+
+  for (const row of cleanedRows) {
+    const txType = normalizeTransactionType(row.transaction_type);
+    row.transaction_type = txType;
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(row.transaction_date)) {
+      return res.status(400).json({ success: false, error: "Import contains a row with an invalid transaction date." });
+    }
+
+    if (txType === "sales") {
+      row.party_name = row.party_name || "Cash Customer";
+      row.trn = /^\d{15}$/.test(String(row.trn || "")) ? String(row.trn) : "000000000000000";
+    } else {
+      if (!row.party_name) {
+        return res.status(400).json({ success: false, error: "Purchase import contains a row with a missing supplier name." });
+      }
+      if (!/^\d{15}$/.test(String(row.trn || ""))) {
+        return res.status(400).json({ success: false, error: "Purchase import contains a row with an invalid 15-digit TRN." });
+      }
+    }
+
+    if (!(Number(row.amount_before_tax) > 0) && !(Number(row.amount_with_tax) > 0)) {
+      return res.status(400).json({ success: false, error: "Import contains a row with no valid financial amount." });
+    }
+  }
 
   // Check for and skip duplicates during batch import using strict 100% all-column matching (both DB and intra-batch)
   let rowsToInsert = cleanedRows;
