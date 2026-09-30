@@ -5428,14 +5428,28 @@
         }
       }
 
-      document.getElementById("preview-total-count").textContent = `${validCount} Rows Loaded`;
-      document.getElementById("preview-valid-badge").textContent = `${validCount} Rows Ready (100%)`;
-      
+      document.getElementById("preview-total-count").textContent = `${validCount + pendingCsvErrors.length} Rows Reviewed`;
+      document.getElementById("preview-valid-badge").textContent = `${validCount} Rows Ready`;
+
       const invBadge = document.getElementById("preview-invalid-badge");
-      invBadge.classList.add("hidden");
+      const invalidCount = pendingCsvErrors.length;
+      if (invalidCount > 0) {
+        invBadge.textContent = `${invalidCount} Invalid`;
+        invBadge.classList.remove("hidden");
+      } else {
+        invBadge.classList.add("hidden");
+      }
 
       const errContainer = document.getElementById("detailed-error-log-container");
-      errContainer.classList.add("hidden");
+      if (invalidCount > 0) {
+        errContainer.classList.remove("hidden");
+        errContainer.innerHTML = pendingCsvErrors.map(err =>
+          `<div class="py-1 text-[11px] text-rose-700">Row ${escapeHtml(err.rowNum)}: ${escapeHtml(err.error)}</div>`
+        ).join("");
+      } else {
+        errContainer.classList.add("hidden");
+        errContainer.innerHTML = "";
+      }
 
       document.getElementById("import-preview-area").classList.remove("hidden");
       checkImportButtonState();
