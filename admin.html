@@ -3684,102 +3684,61 @@
 
       tbody.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-slate-400 text-xs font-medium">Loading registered suppliers...</td></tr>`;
 
-      let suppliersList = [];
-      let fetchedSuccessfully = false;
-
-      // 1. Fetch from pywebview desktop bridge if available
       try {
-        if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_suppliers === "function") {
-          const res = await window.pywebview.api.get_suppliers();
-          if (res && res.success && Array.isArray(res.suppliers)) {
-            suppliersList = res.suppliers;
-            fetchedSuccessfully = true;
-          }
+        const res = await fetch("/api/suppliers");
+        const data = await res.json().catch(() => []);
+        if (!res.ok) {
+          throw new Error(data.error || data.message || `HTTP ${res.status}: Failed to load suppliers.`);
         }
-      } catch (e) {
-        console.warn("pywebview get_suppliers error:", e);
-      }
 
-      // 2. Fetch from REST API if not fetched yet
-      if (!fetchedSuccessfully) {
-        try {
-          const token = getAuthToken();
-          const headers = {};
-          if (token) headers["Authorization"] = `Bearer ${token}`;
-          const res = await fetch("/api/suppliers", { headers });
-          if (res.ok) {
-            const data = await res.json();
-            if (Array.isArray(data)) {
-              suppliersList = data;
-              fetchedSuccessfully = true;
-            } else if (data && Array.isArray(data.suppliers)) {
-              suppliersList = data.suppliers;
-              fetchedSuccessfully = true;
-            }
-          }
-        } catch (e) {
-          console.warn("/api/suppliers fetch error:", e);
+        const suppliersList = Array.isArray(data) ? data : (Array.isArray(data.suppliers) ? data.suppliers : []);
+        if (countBadge) countBadge.textContent = `${suppliersList.length} Suppliers`;
+
+        if (suppliersList.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-slate-400 text-xs font-medium">No registered suppliers found.</td></tr>`;
+          return;
         }
+
+        const rowsHtml = suppliersList.map((s, idx) => {
+          const idRaw = s?.id != null ? String(s.id) : "";
+          const nameRaw = String(s?.name || "").trim();
+          const trnRaw = String(s?.trn || "").trim();
+
+          return `
+            <tr class="hover:bg-slate-50 transition-colors">
+              <td class="py-2.5 px-3 text-center text-slate-500 font-mono text-xs">${idx + 1}</td>
+              <td class="py-2.5 px-3 font-bold text-slate-900">${escapeHtml(nameRaw)}</td>
+              <td class="py-2.5 px-3 font-mono font-bold text-slate-700 tracking-wider">${escapeHtml(trnRaw)}</td>
+              <td class="py-2.5 px-3 text-center">
+                <div class="flex items-center justify-center space-x-1.5">
+                  <button
+                    type="button"
+                    data-action="edit-supplier"
+                    data-id="${escapeHtml(idRaw)}"
+                    data-name="${escapeHtml(nameRaw)}"
+                    data-trn="${escapeHtml(trnRaw)}"
+                    class="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-emerald-100 text-slate-700 hover:text-emerald-800 text-xs font-bold transition-colors cursor-pointer flex items-center space-x-1 border border-slate-200 hover:border-emerald-300">
+                    <span class="pointer-events-none">✏️</span><span class="pointer-events-none">Edit</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-action="delete-supplier"
+                    data-id="${escapeHtml(idRaw)}"
+                    data-name="${escapeHtml(nameRaw)}"
+                    class="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-rose-100 text-slate-700 hover:text-rose-800 text-xs font-bold transition-colors cursor-pointer flex items-center space-x-1 border border-slate-200 hover:border-rose-300">
+                    <span class="pointer-events-none">🗑️</span><span class="pointer-events-none">Delete</span>
+                  </button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join("");
+
+        tbody.innerHTML = rowsHtml;
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-rose-600 text-xs font-semibold">${escapeHtml(err.message || String(err))}</td></tr>`;
+        if (countBadge) countBadge.textContent = "0 Suppliers";
       }
-
-      // No local/mock supplier fallback is permitted. If the server is unavailable, show a truthful empty state.
-      if (!fetchedSuccessfully) {
-        suppliersList = [];
-        showToast("Unable to load suppliers from the server. No local or simulated supplier data was used.", "error");
-      }
-
-      // Update badge counter
-      if (countBadge) countBadge.textContent = `${suppliersList.length} Suppliers`;
-
-      if (suppliersList.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-slate-400 text-xs font-medium">No registered suppliers found. Add your first supplier above.</td></tr>`;
-        return;
-      }
-
-      let html = "";
-      suppliersList.forEach((s, idx) => {
-        const seq = idx + 1;
-        const nameRaw = s.name || s.party_name || "UNKNOWN_SUPPLIER";
-        const trnRaw = s.trn || "000000000000000";
-        const idRaw = s.id ? String(s.id) : trnRaw;
-
-        html += `
-          <tr class="hover:bg-slate-50 transition-colors">
-            <td class="py-2.5 px-3 text-center text-slate-500 font-mono text-xs">${seq}</td>
-            <td class="py-2.5 px-3 font-bold text-slate-900">${escapeHtml(nameRaw)}</td>
-            <td class="py-2.5 px-3 font-mono font-bold text-slate-700 tracking-wider">${escapeHtml(trnRaw)}</td>
-            <td class="py-2.5 px-3 text-center">
-              <div class="flex items-center justify-center space-x-1.5">
-                <button 
-                  type="button" 
-                  data-action="edit-supplier"
-                  data-id="${escapeHtml(idRaw)}"
-                  data-name="${escapeHtml(nameRaw)}"
-                  data-trn="${escapeHtml(trnRaw)}"
-                  class="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-emerald-100 text-slate-700 hover:text-emerald-800 text-xs font-bold transition-colors cursor-pointer flex items-center space-x-1 border border-slate-200 hover:border-emerald-300"
-                  title="Edit supplier details"
-                >
-                  <span class="pointer-events-none">✏️</span>
-                  <span class="pointer-events-none">Edit</span>
-                </button>
-                <button 
-                  type="button" 
-                  data-action="delete-supplier"
-                  data-id="${escapeHtml(idRaw)}"
-                  data-name="${escapeHtml(nameRaw)}"
-                  class="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-rose-100 text-slate-700 hover:text-rose-800 text-xs font-bold transition-colors cursor-pointer flex items-center space-x-1 border border-slate-200 hover:border-rose-300"
-                  title="Delete supplier record"
-                >
-                  <span class="pointer-events-none">🗑️</span>
-                  <span class="pointer-events-none">Delete</span>
-                </button>
-              </div>
-            </td>
-          </tr>
-        `;
-      });
-
-      tbody.innerHTML = html;
     }
 
     function editSupplier(id, name, trn) {
@@ -3812,66 +3771,42 @@
 
     async function deleteSupplier(idOrTrn, partyName) {
       const nameStr = partyName || idOrTrn;
-      if (!confirm(`⚠️ Are you sure you want to delete supplier '${nameStr}' (TRN/ID: ${idOrTrn})?\n\nNote: System will check if this supplier has existing invoices before deleting.`)) {
+      if (!confirm(`Are you sure you want to delete supplier '${nameStr}'? The server will block deletion when existing transactions reference it.`)) {
         return;
       }
 
-      let errorMsg = null;
-      let success = false;
-
-      // 1. Desktop pywebview call
       try {
-        if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.delete_supplier === "function") {
-          const res = await window.pywebview.api.delete_supplier(idOrTrn);
-          if (res && res.success) {
-            success = true;
-          } else if (res && res.error) {
-            errorMsg = res.error;
-          }
+        const res = await fetch(`/api/suppliers/${encodeURIComponent(idOrTrn)}`, {
+          method: "DELETE"
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.success === false) {
+          throw new Error(data.error || data.message || `HTTP ${res.status}: Supplier deletion failed.`);
         }
-      } catch (err) {
-        console.warn("pywebview delete_supplier error:", err);
-      }
 
-      // 2. REST API DELETE endpoint
-      if (!success && !errorMsg) {
-        try {
-          const srvRes = await fetch(`/api/suppliers/${encodeURIComponent(idOrTrn)}`, {
-            method: "DELETE"
-          });
-          const resData = await srvRes.json().catch(() => ({}));
-          if (srvRes.ok && resData.success !== false) {
-            success = true;
-          } else {
-            errorMsg = resData.error || resData.message || `HTTP ${srvRes.status} Cannot delete supplier. They have existing invoices in the system.`;
-          }
-        } catch (err) {
-          console.warn("REST delete supplier fallback error:", err);
-        }
-      }
-
-      if (success) {
         showToast(`✓ Supplier '${nameStr}' deleted successfully.`, "success");
         await loadSuppliersModalTable();
-      } else {
-        const finalError = errorMsg || "Cannot delete supplier. They have existing invoices in the system.";
-        alert(`Cannot Delete Supplier '${nameStr}':\n\n${finalError}`);
-        showToast(`✕ Deletion Blocked: ${finalError}`, "error");
+        if (typeof loadSuppliersList === "function") await loadSuppliersList();
+      } catch (err) {
+        console.error("Supplier deletion error:", err);
+        showToast(`✕ Supplier deletion failed: ${err.message || String(err)}`, "error");
       }
     }
 
     async function handleSaveAdminSupplier(e) {
       e.preventDefault();
+
       const editIdInput = document.getElementById("admin-modal-supplier-edit-id");
       const oldTrnInput = document.getElementById("admin-modal-supplier-old-trn");
       const nameInput = document.getElementById("admin-modal-supplier-name");
       const trnInput = document.getElementById("admin-modal-supplier-trn");
       const alertBox = document.getElementById("admin-modal-supplier-alert");
 
-      const name = (nameInput ? nameInput.value : "").trim();
-      const trn = (trnInput ? trnInput.value : "").trim();
-      const editId = editIdInput ? editIdInput.value : "";
-      const oldTrn = oldTrnInput ? oldTrnInput.value : "";
+      const name = String(nameInput?.value || "").trim();
+      const trn = String(trnInput?.value || "").trim();
+      const editId = String(editIdInput?.value || "").trim();
+      const oldTrn = String(oldTrnInput?.value || "").trim();
+      const identifier = editId || oldTrn;
 
       if (!name) {
         if (alertBox) {
@@ -3880,114 +3815,54 @@
         }
         return;
       }
-
-      // TRN format as text validation
-      if (!trn) {
+      if (!/^\d{15}$/.test(trn)) {
         if (alertBox) {
-          alertBox.textContent = "Please enter the Tax Registration Number (TRN).";
+          alertBox.textContent = "TRN must contain exactly 15 numeric digits.";
           alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
         }
         if (trnInput) trnInput.focus();
         return;
       }
 
-      const isEdit = Boolean(editId || oldTrn);
-
-      if (isEdit) {
-        let updated = false;
-        let errStr = null;
-
-        // Desktop call
-        try {
-          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.update_supplier === "function") {
-            const res = await window.pywebview.api.update_supplier(editId || oldTrn, name, trn);
-            if (res && res.success) updated = true;
-            else if (res && res.error) errStr = res.error;
-          }
-        } catch (err) {
-          console.warn("pywebview update_supplier error:", err);
-        }
-
-        // Web REST API call
-        if (!updated && !errStr) {
-          try {
-            const srvRes = await fetch(`/api/suppliers/${encodeURIComponent(editId || oldTrn)}`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name, trn, old_trn: oldTrn })
-            });
-            const resData = await srvRes.json().catch(() => ({}));
-            if (srvRes.ok && resData.success !== false) {
-              updated = true;
-            } else {
-              errStr = resData.error || resData.message || "Failed to update supplier";
-            }
-          } catch (err) {
-            console.warn("REST update supplier error:", err);
-          }
-        }
-
-        if (updated) {
-          showToast(`✓ Supplier '${name}' updated successfully!`, "success");
-          resetAdminSupplierForm();
-          await loadSuppliersModalTable();
+      try {
+        let res;
+        if (identifier) {
+          res = await fetch(`/api/suppliers/${encodeURIComponent(identifier)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, trn })
+          });
         } else {
-            REAL_UAE_RECORDS.push({ party_name: name, trn: trn, type: "purchases" });
-          }
-
-          try {
-            const saved = localStorage.getItem("accounting_custom_suppliers");
-            let list = saved ? JSON.parse(saved) : [];
-            if (Array.isArray(list)) {
-              const item = list.find(cs => String(cs.trn) === String(targetTrn));
-              if (item) {
-                item.name = name;
-                item.trn = trn;
-              } else {
-                list.push({ name, trn });
-              }
-              localStorage.setItem("accounting_custom_suppliers", JSON.stringify(list));
-            }
-          } catch (e) {}
-
-          showToast(`✓ Supplier '${name}' updated successfully!`, "success");
-          resetAdminSupplierForm();
-          await loadSuppliersModalTable();
-        } else {
-          if (alertBox) {
-            alertBox.textContent = errStr || "Failed to update supplier.";
-            alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
-          }
-        }
-
-      } else {
-        // CREATE MODE
-        try {
-          const srvRes = await fetch("/api/suppliers", {
+          res = await fetch("/api/suppliers", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ name, trn })
           });
-          const resData = await srvRes.json().catch(() => ({}));
-          if (!srvRes.ok || resData.success === false) {
-            throw new Error(resData.error || resData.message || `HTTP ${srvRes.status}: Failed to register supplier.`);
-          }
+        }
 
-          showToast(`✓ Supplier '${name}' (TRN: ${trn}) successfully registered.`, "success");
-          resetAdminSupplierForm();
-          await loadSuppliersModalTable();
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.success === false) {
+          throw new Error(data.error || data.message || `HTTP ${res.status}: Supplier operation failed.`);
+        }
 
-          const searchInput = document.getElementById("filter-search-input");
-          if (searchInput) {
-            searchInput.value = name;
-            handleGlobalSearch(name);
-          }
-        } catch (err) {
-          if (alertBox) {
-            alertBox.textContent = err.message || "Failed to register supplier.";
-            alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
-          }
-          return;
+        showToast(identifier
+          ? `✓ Supplier '${name}' updated successfully.`
+          : `✓ Supplier '${name}' registered successfully.`, "success");
+
+        resetAdminSupplierForm();
+        await loadSuppliersModalTable();
+        if (typeof loadSuppliersList === "function") await loadSuppliersList();
+
+        const searchInput = document.getElementById("filter-search-input");
+        if (!identifier && searchInput) {
+          searchInput.value = name;
+          handleGlobalSearch(name);
+        }
+      } catch (err) {
+        console.error("Supplier save error:", err);
+        if (alertBox) {
+          alertBox.textContent = err.message || "Supplier operation failed.";
+          alertBox.className = "p-2.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 block";
         }
       }
     }
