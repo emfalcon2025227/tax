@@ -22,34 +22,35 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
 // ============================================================================
-// PRODUCTION SECRET & ENVIRONMENT VALIDATION (CQ-03)
+// PRODUCTION SECRET & ENVIRONMENT VALIDATION
 // ============================================================================
+
 const isProd = process.env.NODE_ENV === "production";
 
 if (isProd) {
-  if (!process.env.AUTH_SECRET_KEY && !process.env.JWT_SECRET) {
-    console.warn("[WARN] AUTH_SECRET_KEY/JWT_SECRET not set in production. Using secure default fallback.");
-    process.env.AUTH_SECRET_KEY = "uae_tax_accounting_system_secure_secret_2026_jwt_production_fallback_key";
+  const missing: string[] = [];
+  if (!process.env.SUPABASE_URL?.trim()) missing.push("SUPABASE_URL");
+  if (!process.env.SUPABASE_KEY?.trim()) missing.push("SUPABASE_KEY");
+  if (!process.env.AUTH_SECRET_KEY?.trim() && !process.env.JWT_SECRET?.trim()) missing.push("AUTH_SECRET_KEY");
+
+  const authSecretCandidate = (process.env.AUTH_SECRET_KEY || process.env.JWT_SECRET || "").trim();
+  if (authSecretCandidate && authSecretCandidate.length < 32) {
+    throw new Error("[FATAL CONFIG] AUTH_SECRET_KEY must contain at least 32 characters in production.");
   }
-  const checkKey = (process.env.AUTH_SECRET_KEY || process.env.JWT_SECRET || "").trim();
-  if (checkKey.length < 32) {
-    console.warn("[WARN] AUTH_SECRET_KEY length < 32 in production. Expanding fallback.");
-  }
-  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
-    console.warn("[WARN] SUPABASE_URL or SUPABASE_KEY not set in production. Using default fallback configuration.");
+  if (missing.length > 0) {
+    throw new Error("[FATAL CONFIG] Missing required production configuration: " + missing.join(", "));
   }
 }
 
-const DEFAULT_SUPABASE_URL = "https://frmgpbwbmarkatjroflr.supabase.co";
-const DEFAULT_SUPABASE_KEY = "sb_secret_lESPIyr1EUoMeckMYNPhBQ_wOBAaMya";
+const AUTH_SECRET_KEY: string = (() => {
+  const configured = (process.env.AUTH_SECRET_KEY || process.env.JWT_SECRET || "").trim();
+  if (configured) return configured;
+  if (!isProd) return crypto.randomBytes(32).toString("hex");
+  throw new Error("[FATAL CONFIG] AUTH_SECRET_KEY is required in production.");
+})();
 
-const rawAuthSecret = (process.env.AUTH_SECRET_KEY || process.env.JWT_SECRET || "uae_tax_accounting_system_secure_secret_2026_jwt").trim();
-const AUTH_SECRET_KEY: string = rawAuthSecret;
-
-const rawSupabaseUrl = (process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, "");
-const rawSupabaseKey = (process.env.SUPABASE_KEY || DEFAULT_SUPABASE_KEY).trim();
-const SUPABASE_URL: string = rawSupabaseUrl;
-const SUPABASE_KEY: string = rawSupabaseKey;
+const SUPABASE_URL: string = (process.env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
+const SUPABASE_KEY: string = (process.env.SUPABASE_KEY || "").trim();
 
 function getUAECurrentDate(): string {
   try {
@@ -351,9 +352,11 @@ function updateEnvFile(url: string, key: string) {
 
 // Helper to safely get Supabase credentials with fallback defaults
 function getSupabaseConfig(): { url: string; key: string } {
-  const url = (process.env.SUPABASE_URL || SUPABASE_URL || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, "");
-  const key = (process.env.SUPABASE_KEY || SUPABASE_KEY || DEFAULT_SUPABASE_KEY).trim();
-  return { url, key };
+  return { url: SUPABASE_URL, key: SUPABASE_KEY };
+}
+
+function isSupabaseConfigured(): boolean {
+  return Boolean(SUPABASE_URL && SUPABASE_KEY);
 }
 
 // ============================================================================
@@ -421,34 +424,14 @@ if (configuredClerkUser && configuredClerkPass && configuredClerkUser.toLowerCas
   });
 }
 
-// 2. Standard system accounts (seed defaults if not overridden by env config)
-const defaultUsers: Array<{ id: string; username: string; pass: string; role: "Owner" | "Clerk" }> = [
-  { id: "seed-owner-admin", username: "admin", pass: "Owner@123456", role: "Owner" },
-  { id: "seed-owner-owner", username: "owner", pass: "Owner@123456", role: "Owner" },
-  { id: "seed-clerk-shareef", username: "shareef", pass: "Clerk@123456", role: "Clerk" },
-  { id: "seed-clerk-clerk", username: "clerk", pass: "Clerk@123456", role: "Clerk" },
-];
-
-for (const def of defaultUsers) {
-  if (!MEMORY_USERS.some(u => u.username.toLowerCase() === def.username.toLowerCase())) {
-    MEMORY_USERS.push({
-      id: def.id,
-      username: def.username,
-      passwordHash: bcrypt.hashSync(def.pass, 12),
-      role: def.role,
-      created_at: new Date().toISOString()
-    });
-  }
-}
-
-// 3. Load persisted custom users from users.json on disk
-const persistedUsersList = loadPersistedUsers();
-for (const pu of persistedUsersList) {
-  const existingIdx = MEMORY_USERS.findIndex(u => u.username.toLowerCase() === pu.username.toLowerCase());
-  if (existingIdx !== -1) {
-    MEMORY_USERS[existingIdx] = pu;
-  } else {
-    MEMORY_USERS.push(pu);
+// 2. No hardcoded/default production credentials. Local development may use explicitly configured environment users.
+// 3. Load persisted custom users only outside production. Production authentication is DB-only.
+if (!isProd) {
+  const persistedUsersList = loadPersistedUsers();
+  for (const pu of persistedUsersList) {
+    const existingIdx = MEMORY_USERS.findIndex(u => u.username.toLowerCase() === pu.username.toLowerCase());
+    if (existingIdx !== -1) MEMORY_USERS[existingIdx] = pu;
+    else MEMORY_USERS.push(pu);
   }
 }
 
@@ -482,7 +465,8 @@ app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
         headers: {
           apikey: key,
           Authorization: `Bearer ${key}`
-        }
+        },
+        signal: AbortSignal.timeout(10000)
       }
     );
     if (srvRes.ok) {
