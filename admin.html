@@ -5126,11 +5126,16 @@
           const rowNum = i + 1;
           let party = partyIdx < row.length ? row[partyIdx].trim() : "";
           if (!party || ["#n/a", "null", "none", "nan", "blank", "n/a"].includes(party.toLowerCase())) {
-            party = "UNKNOWN_SUPPLIER";
+            pendingCsvErrors.push({ rowNum, error: "Supplier name is missing." });
+            continue;
           }
 
           const rawTrn = trnIdx < row.length ? row[trnIdx] : "";
-          const { trn: cleanTrn } = cleanTrnStr(rawTrn);
+          const { trn: cleanTrn, isValid: trnValid } = cleanTrnStr(rawTrn);
+          if (!trnValid) {
+            pendingCsvErrors.push({ rowNum, error: "Supplier TRN must contain exactly 15 digits." });
+            continue;
+          }
 
           validCount++;
           pendingCsvRows.push({ name: party, trn: cleanTrn, rowNum });
@@ -5139,8 +5144,8 @@
           tr.className = "hover:bg-slate-50";
           tr.innerHTML = `
             <td class="py-1.5 px-3 text-slate-500">${rowNum}</td>
-            <td class="py-1.5 px-3 font-bold">${party}</td>
-            <td class="py-1.5 px-3 font-mono text-slate-800">${cleanTrn}</td>
+            <td class="py-1.5 px-3 font-bold">${escapeHtml(party)}</td>
+            <td class="py-1.5 px-3 font-mono text-slate-800">${escapeHtml(cleanTrn)}</td>
             <td class="py-1.5 px-3 text-center">
               <span class="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-emerald-100 text-emerald-800">
                 READY / AUTO-CORRECTED
