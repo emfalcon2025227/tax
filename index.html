@@ -2010,7 +2010,6 @@
       if (confirm("Are you sure you want to clear the local offline queue? Any unsynced invoices will be removed.")) {
         saveOfflineQueue([]);
         localStorage.removeItem(REJECTED_STORAGE_KEY);
-        closeConfigModal();
         showAlert("Queue Cleared", "Local offline queue has been emptied.", "success");
       }
     }
