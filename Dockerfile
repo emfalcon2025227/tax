@@ -20,7 +20,6 @@ RUN addgroup -S app && adduser -S app -G app
 COPY --from=build --chown=app:app /app/package.json ./package.json
 COPY --from=build --chown=app:app /app/node_modules ./node_modules
 COPY --from=build --chown=app:app /app/dist ./dist
-COPY --from=build --chown=app:app /app/config.json ./config.json
 
 USER app
 
