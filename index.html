@@ -1922,12 +1922,12 @@
     function handleOnlineEvent() {
       const dot = document.getElementById("status-dot");
       const text = document.getElementById("status-text");
-      if (supabaseClient) {
+      if (serverDbConnected) {
         dot.className = "w-2 h-2 rounded-full bg-emerald-500";
         text.textContent = "Supabase Active";
       } else {
-        dot.className = "w-2 h-2 rounded-full bg-blue-400";
-        text.textContent = "Online";
+        dot.className = "w-2 h-2 rounded-full bg-amber-500";
+        text.textContent = "Database Disconnected";
       }
 
       const count = getOfflineQueue().length;
@@ -2481,7 +2481,8 @@
         const res = await fetch("/api/status");
         if (res.ok) {
           const status = await res.json();
-          if (status.supabase_connected) {
+          serverDbConnected = status.supabase_connected === true;
+          if (serverDbConnected) {
             dot.className = "w-2 h-2 rounded-full bg-emerald-500";
             text.textContent = "Supabase Active (Server Proxy)";
             syncSuppliersFromSupabase();
@@ -2492,6 +2493,7 @@
         console.warn("Server status check failed:", err);
       }
 
+      serverDbConnected = false;
       dot.className = "w-2 h-2 rounded-full bg-amber-500";
       text.textContent = "Database Disconnected";
       // Do not load or fabricate supplier data while the trusted server reports no DB connection.
