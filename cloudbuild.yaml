@@ -9,22 +9,22 @@ steps:
     args:
       - build
       - -t
-      - \${_REGION}-docker.pkg.dev/$PROJECT_ID/\${_AR_REPOSITORY}/\${_IMAGE_NAME}:$SHORT_SHA
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA
       - .
 
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - \${_REGION}-docker.pkg.dev/$PROJECT_ID/\${_AR_REPOSITORY}/\${_IMAGE_NAME}:$SHORT_SHA
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
     args:
       - run
       - deploy
-      - \${_SERVICE}
-      - --image=\${_REGION}-docker.pkg.dev/$PROJECT_ID/\${_AR_REPOSITORY}/\${_IMAGE_NAME}:$SHORT_SHA
-      - --region=\${_REGION}
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA
+      - --region=${_REGION}
       - --platform=managed
       - --port=3000
       - --memory=512Mi
@@ -37,7 +37,7 @@ steps:
       - --allow-unauthenticated
 
 images:
-  - \${_REGION}-docker.pkg.dev/$PROJECT_ID/\${_AR_REPOSITORY}/\${_IMAGE_NAME}:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA
 
 options:
   logging: CLOUD_LOGGING_ONLY
