@@ -20,36 +20,34 @@ import { createServer as createViteServer } from "vite";
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
-
-// ============================================================================
-// PRODUCTION SECRET & ENVIRONMENT VALIDATION (CQ-03)
-// ============================================================================
 const isProd = process.env.NODE_ENV === "production";
 
-if (isProd) {
-  if (!process.env.AUTH_SECRET_KEY && !process.env.JWT_SECRET) {
-    console.warn("[WARN] AUTH_SECRET_KEY/JWT_SECRET not set in production. Using secure default fallback.");
-    process.env.AUTH_SECRET_KEY = "uae_tax_accounting_system_secure_secret_2026_jwt_production_fallback_key";
-  }
-  const checkKey = (process.env.AUTH_SECRET_KEY || process.env.JWT_SECRET || "").trim();
-  if (checkKey.length < 32) {
-    console.warn("[WARN] AUTH_SECRET_KEY length < 32 in production. Expanding fallback.");
-  }
-  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
-    console.warn("[WARN] SUPABASE_URL or SUPABASE_KEY not set in production. Using default fallback configuration.");
-  }
+function requireEnv(name: string): string {
+  const value = String(process.env[name] || "").trim();
+  if (!value) throw new Error(`[FATAL CONFIG] Missing required environment variable: ${name}`);
+  return value;
 }
 
-const DEFAULT_SUPABASE_URL = "https://frmgpbwbmarkatjroflr.supabase.co";
-const DEFAULT_SUPABASE_KEY = "sb_secret_lESPIyr1EUoMeckMYNPhBQ_wOBAaMya";
+const AUTH_SECRET_KEY = requireEnv("AUTH_SECRET_KEY");
+if (AUTH_SECRET_KEY.length < 32) {
+  throw new Error("[FATAL CONFIG] AUTH_SECRET_KEY must be at least 32 characters.");
+}
 
-const rawAuthSecret = (process.env.AUTH_SECRET_KEY || process.env.JWT_SECRET || "uae_tax_accounting_system_secure_secret_2026_jwt").trim();
-const AUTH_SECRET_KEY: string = rawAuthSecret;
+const SUPABASE_URL = requireEnv("SUPABASE_URL").replace(/\/+$/, "");
+const SUPABASE_KEY = requireEnv("SUPABASE_KEY");
 
-const rawSupabaseUrl = (process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, "");
-const rawSupabaseKey = (process.env.SUPABASE_KEY || DEFAULT_SUPABASE_KEY).trim();
-const SUPABASE_URL: string = rawSupabaseUrl;
-const SUPABASE_KEY: string = rawSupabaseKey;
+try {
+  const parsedUrl = new URL(SUPABASE_URL);
+  if (isProd && parsedUrl.protocol !== "https:") {
+    throw new Error("Production SUPABASE_URL must use HTTPS.");
+  }
+} catch (err: any) {
+  throw new Error(`[FATAL CONFIG] Invalid SUPABASE_URL: ${err.message}`);
+}
+
+function getSupabaseConfig(): { url: string; key: string } {
+  return { url: SUPABASE_URL, key: SUPABASE_KEY };
+}
 
 function getUAECurrentDate(): string {
   try {
@@ -59,9 +57,8 @@ function getUAECurrentDate(): string {
       month: "2-digit",
       day: "2-digit"
     }).format(new Date());
-  } catch (err) {
-    console.warn("[TIMEZONE] Fallback to UTC date string:", err);
-    return new Date().toISOString().split("T")[0];
+  } catch {
+    return new Date().toISOString().slice(0, 10);
   }
 }
 
@@ -100,7 +97,7 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
 // Rate Limiters (CQ-05)
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 200, // Generous limit for dev / preview testing
+  max: 10, // Failed login attempts per 15 minutes per IP
   skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
@@ -322,40 +319,6 @@ function writeConfigJson(data: any) {
   fs.writeFileSync(cfgPath, JSON.stringify(data, null, 2), "utf-8");
 }
 
-function updateEnvFile(url: string, key: string) {
-  const envPath = path.join(process.cwd(), ".env");
-  let content = "";
-  if (fs.existsSync(envPath)) {
-    content = fs.readFileSync(envPath, "utf-8");
-  }
-  const lines = content.split(/\r?\n/);
-  let urlSet = false;
-  let keySet = false;
-  const newLines = lines.map(line => {
-    if (line.startsWith("SUPABASE_URL=") || line.startsWith("export SUPABASE_URL=")) {
-      urlSet = true;
-      return `SUPABASE_URL=${url}`;
-    }
-    if (line.startsWith("SUPABASE_KEY=") || line.startsWith("export SUPABASE_KEY=")) {
-      keySet = true;
-      return `SUPABASE_KEY=${key}`;
-    }
-    return line;
-  });
-  if (!urlSet) newLines.push(`SUPABASE_URL=${url}`);
-  if (!keySet) newLines.push(`SUPABASE_KEY=${key}`);
-  fs.writeFileSync(envPath, newLines.filter(Boolean).join("\n") + "\n", "utf-8");
-  process.env.SUPABASE_URL = url;
-  process.env.SUPABASE_KEY = key;
-}
-
-// Helper to safely get Supabase credentials with fallback defaults
-function getSupabaseConfig(): { url: string; key: string } {
-  const url = (process.env.SUPABASE_URL || SUPABASE_URL || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, "");
-  const key = (process.env.SUPABASE_KEY || SUPABASE_KEY || DEFAULT_SUPABASE_KEY).trim();
-  return { url, key };
-}
-
 // ============================================================================
 // API ROUTES (PROTECTED SERVER-SIDE PROXY FOR SUPABASE WITH RBAC)
 // ============================================================================
@@ -421,36 +384,7 @@ if (configuredClerkUser && configuredClerkPass && configuredClerkUser.toLowerCas
   });
 }
 
-// 2. Standard system accounts (seed defaults if not overridden by env config)
-const defaultUsers: Array<{ id: string; username: string; pass: string; role: "Owner" | "Clerk" }> = [
-  { id: "seed-owner-admin", username: "admin", pass: "Owner@123456", role: "Owner" },
-  { id: "seed-owner-owner", username: "owner", pass: "Owner@123456", role: "Owner" },
-  { id: "seed-clerk-shareef", username: "shareef", pass: "Clerk@123456", role: "Clerk" },
-  { id: "seed-clerk-clerk", username: "clerk", pass: "Clerk@123456", role: "Clerk" },
-];
-
-for (const def of defaultUsers) {
-  if (!MEMORY_USERS.some(u => u.username.toLowerCase() === def.username.toLowerCase())) {
-    MEMORY_USERS.push({
-      id: def.id,
-      username: def.username,
-      passwordHash: bcrypt.hashSync(def.pass, 12),
-      role: def.role,
-      created_at: new Date().toISOString()
-    });
-  }
-}
-
-// 3. Load persisted custom users from users.json on disk
-const persistedUsersList = loadPersistedUsers();
-for (const pu of persistedUsersList) {
-  const existingIdx = MEMORY_USERS.findIndex(u => u.username.toLowerCase() === pu.username.toLowerCase());
-  if (existingIdx !== -1) {
-    MEMORY_USERS[existingIdx] = pu;
-  } else {
-    MEMORY_USERS.push(pu);
-  }
-}
+// No hardcoded default credentials. Local development may use explicit OWNER_* / CLERK_* environment variables.
 
 app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
   const { username } = req.body;
