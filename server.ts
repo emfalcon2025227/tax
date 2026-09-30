@@ -1010,62 +1010,6 @@ app.delete(["/api/suppliers/:identifier", "/api/suppliers"], requireOwner, async
 });
 
 
-app.delete(["/api/suppliers/:identifier", "/api/suppliers"], requireOwner, async (req: Request, res: Response) => {
-  const { url, key } = getSupabaseConfig();
-  const identifier = String(req.params.identifier || req.query.identifier || req.query.trn || req.body?.identifier || req.body?.trn || req.body?.id || "").trim();
-
-  if (!identifier) {
-    return res.status(400).json({ success: false, error: "Missing supplier identifier (TRN or ID)." });
-  }
-
-  const headers = {
-    apikey: key,
-    Authorization: `Bearer ${key}`
-  };
-
-  try {
-    // Foreign Key / Relational Integrity Check
-    const chkResp = await fetch(`${url}/rest/v1/transactions?select=id&or=(trn.eq.${encodeURIComponent(identifier)},party_name.ilike.${encodeURIComponent("%" + identifier + "%")})`, { headers });
-    if (chkResp.ok) {
-      const chkData = await chkResp.json().catch(() => []);
-      if (Array.isArray(chkData) && chkData.length > 0) {
-        return res.status(400).json({
-          success: false,
-          error: "Cannot delete supplier. They have existing invoices in the system."
-        });
-      }
-    }
-
-    let delFilter = "";
-    if (/^\d{15}$/.test(identifier)) {
-      delFilter = `trn=eq.${encodeURIComponent(identifier)}`;
-    } else if (/^\d+$/.test(identifier) && identifier.length < 12) {
-      delFilter = `or=(id.eq.${encodeURIComponent(identifier)},trn.eq.${encodeURIComponent(identifier)})`;
-    } else {
-      delFilter = `or=(name.eq.${encodeURIComponent(identifier)},trn.eq.${encodeURIComponent(identifier)})`;
-    }
-
-    const response = await fetch(`${url}/rest/v1/suppliers?${delFilter}`, {
-      method: "DELETE",
-      headers: { ...headers, Prefer: "return=representation" }
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      return res.status(400).json({ success: false, error: errText || "Failed to delete supplier" });
-    }
-
-    try {
-    } catch (e) {
-      console.warn("Could not save deleted_suppliers to config.json:", e);
-    }
-
-    return res.json({ success: true, message: `Supplier '${identifier}' deleted successfully.` });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
-
 // Helper to fetch all transactions from Supabase bypassing the PostgREST 1,000 max-rows limit via Range pagination
 async function fetchAllSupabaseTransactions(
   url: string,
