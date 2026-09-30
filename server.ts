@@ -1142,14 +1142,14 @@ async function fetchAllSupabaseTransactions(
   order = "transaction_date.desc",
   select = "*"
 ): Promise<any[]> {
-  const allRows: any[] = [];
+  const rows: any[] = [];
   const batchSize = 1000;
   let offset = 0;
 
   while (true) {
     const end = offset + batchSize - 1;
     const response = await fetch(
-      \`${url}/rest/v1/transactions?select=\${encodeURIComponent(select)}&order=\${encodeURIComponent(order)}\`,
+      \`\${url}/rest/v1/transactions?select=\${encodeURIComponent(select)}&order=\${encodeURIComponent(order)}\`,
       {
         headers: {
           apikey: key,
@@ -1169,13 +1169,12 @@ async function fetchAllSupabaseTransactions(
     const batch = await response.json();
     if (!Array.isArray(batch) || batch.length === 0) break;
 
-    allRows.push(...batch);
-
+    rows.push(...batch);
     if (batch.length < batchSize) break;
     offset += batchSize;
   }
 
-  return allRows;
+  return rows;
 }
 
 // Top-level Helpers to identify exact duplicate transaction keys
