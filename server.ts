@@ -1591,184 +1591,135 @@ function parseImportDecimal(val: any): number {
 // 4. Batch CSV Import Endpoint for Transactions (Owner Only - Rate Limited)
 app.post("/api/import/transactions", importLimiter, requireOwner, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  const { rows, forced_type } = req.body; // Array of row objects from CSV and optional forced_type
+  const { rows, forced_type } = req.body || {};
 
-  if (!rows || !Array.isArray(rows)) {
-    return res.status(400).json({ success: false, error: "Invalid payload, 'rows' array expected" });
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > 5000) {
+    return res.status(400).json({
+      success: false,
+      error: "rows must be a non-empty array containing no more than 5,000 records."
+    });
   }
 
-  const cleanedRows = rows.map((r: any) => {
-    let trnRaw = String(r.trn || "").trim();
-    let trnDigits = trnRaw.replace(/\D/g, "");
-    if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-    if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
+  const preparedRows: any[] = [];
+  const validationErrors: Array<{ row: number; error: string }> = [];
 
-    let rawBefore = (r.amount_before_tax !== undefined && r.amount_before_tax !== null && r.amount_before_tax !== "") 
-      ? parseImportDecimal(r.amount_before_tax) 
-      : null;
-    let rawVat = (r.vat_amount !== undefined && r.vat_amount !== null && r.vat_amount !== "") 
-      ? parseImportDecimal(r.vat_amount) 
-      : null;
-    let rawWith = (r.amount_with_tax !== undefined && r.amount_with_tax !== null && r.amount_with_tax !== "") 
-      ? parseImportDecimal(r.amount_with_tax) 
-      : ((r.total_amount !== undefined && r.total_amount !== null && r.total_amount !== "") ? parseImportDecimal(r.total_amount) : null);
+  for (let index = 0; index < rows.length; index++) {
+    const r = rows[index] || {};
+    try {
+      const transactionType = forced_type
+        ? String(normalizeTransactionType(forced_type))
+        : String(normalizeTransactionType(r.transaction_type));
 
-    let rawTaxMode = String(r.tax_mode || "").toLowerCase().trim();
-    let isExempt = false;
-    if (rawTaxMode === "exempt" || r.is_exempt === true || rawTaxMode.includes("exempt") || rawTaxMode.includes("zero") || rawTaxMode.includes("0%") || rawTaxMode.includes("مستثن") || rawTaxMode.includes("اعفاء") || rawTaxMode.includes("إعفاء")) {
-      isExempt = true;
-    } else if (rawVat !== null && rawVat === 0) {
-      isExempt = true;
-    } else if (rawBefore !== null && rawWith !== null && rawBefore > 0 && Math.abs(rawBefore - rawWith) < 0.001) {
-      isExempt = true;
-    }
-
-    let amountBeforeTax = 0.0;
-    let vatAmount = 0.0;
-    let amountWithTax = 0.0;
-    let vatRate = 0.05;
-    let taxMode = r.tax_mode || "inclusive";
-
-    if (isExempt) {
-      vatAmount = 0.0;
-      vatRate = 0.0;
-      taxMode = "exempt";
-      if (rawBefore !== null && rawBefore > 0) {
-        amountBeforeTax = rawBefore;
-        amountWithTax = (rawWith !== null && rawWith > 0) ? rawWith : rawBefore;
-      } else if (rawWith !== null && rawWith > 0) {
-        amountWithTax = rawWith;
-        amountBeforeTax = rawWith;
+      const transactionDate = String(r.transaction_date || "").split("T")[0];
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(transactionDate)) {
+        throw new Error("transaction_date must be YYYY-MM-DD.");
       }
-    } else {
-      // PRESERVE VALUES AS-IS FROM EXTERNAL FILE WITHOUT UNWANTED RECALCULATION
-      if (rawBefore !== null && rawVat !== null && rawWith !== null) {
-        amountBeforeTax = rawBefore;
-        vatAmount = rawVat;
-        amountWithTax = rawWith;
-        vatRate = 0.05;
-      } else if (rawBefore !== null && rawVat !== null) {
-        amountBeforeTax = rawBefore;
-        vatAmount = rawVat;
-        amountWithTax = Math.round((amountBeforeTax + vatAmount) * 100) / 100;
-        vatRate = 0.05;
-      } else if (rawWith !== null && rawVat !== null) {
-        amountWithTax = rawWith;
-        vatAmount = rawVat;
-        amountBeforeTax = Math.round((amountWithTax - vatAmount) * 100) / 100;
-        vatRate = 0.05;
-      } else if (rawWith !== null && rawBefore !== null) {
-        amountWithTax = rawWith;
-        amountBeforeTax = rawBefore;
-        vatAmount = Math.round((amountWithTax - amountBeforeTax) * 100) / 100;
-        vatRate = 0.05;
-      } else if (rawWith !== null && rawWith > 0) {
-        amountWithTax = rawWith;
-        amountBeforeTax = Math.round((amountWithTax / 1.05) * 100) / 100;
-        vatAmount = Math.round((amountWithTax - amountBeforeTax) * 100) / 100;
-        vatRate = 0.05;
-      } else if (rawBefore !== null && rawBefore > 0) {
-        amountBeforeTax = rawBefore;
-        vatAmount = Math.round((amountBeforeTax * 0.05) * 100) / 100;
-        amountWithTax = Math.round((amountBeforeTax + vatAmount) * 100) / 100;
-        vatRate = 0.05;
+
+      let partyName = String(r.party_name || "").trim();
+      let trn = String(r.trn || "").trim().replace(/\D/g, "");
+      if (transactionType === "sales") {
+        partyName = "Cash Customer";
+        trn = "000000000000000";
+      } else {
+        if (!partyName) throw new Error("Supplier / party name is required.");
+        if (!/^\d{15}$/.test(trn)) throw new Error("Purchase TRN must contain exactly 15 digits.");
       }
+
+      const taxMode = normalizeTaxMode(r.tax_mode || "inclusive");
+      const sourceAmount =
+        taxMode === "inclusive"
+          ? (r.amount_input ?? r.amount_with_tax ?? r.total_amount ?? r.amount)
+          : (r.amount_input ?? r.amount_before_tax ?? r.amount);
+
+      const tax = calculateAuthoritativeTax(
+        { tax_mode: taxMode, amount_input: sourceAmount },
+        false
+      );
+
+      const providedBefore = r.amount_before_tax !== undefined && r.amount_before_tax !== null && r.amount_before_tax !== ""
+        ? parseImportDecimal(r.amount_before_tax) : null;
+      const providedVat = r.vat_amount !== undefined && r.vat_amount !== null && r.vat_amount !== ""
+        ? parseImportDecimal(r.vat_amount) : null;
+      const providedTotal = r.amount_with_tax !== undefined && r.amount_with_tax !== null && r.amount_with_tax !== ""
+        ? parseImportDecimal(r.amount_with_tax) : null;
+
+      if (providedBefore !== null && Math.abs(providedBefore - tax.amount_before_tax) > 0.01) {
+        throw new Error("amount_before_tax does not match the selected tax mode.");
+      }
+      if (providedVat !== null && Math.abs(providedVat - tax.vat_amount) > 0.01) {
+        throw new Error("vat_amount does not match the selected tax mode.");
+      }
+      if (providedTotal !== null && Math.abs(providedTotal - tax.amount_with_tax) > 0.01) {
+        throw new Error("amount_with_tax does not match the selected tax mode.");
+      }
+
+      preparedRows.push({
+        transaction_type: transactionType,
+        transaction_date: transactionDate,
+        invoice_no: r.invoice_no == null ? "" : String(r.invoice_no).trim(),
+        party_name: partyName,
+        trn,
+        amount_before_tax: tax.amount_before_tax,
+        vat_rate: tax.vat_rate,
+        vat_amount: tax.vat_amount,
+        amount_with_tax: tax.amount_with_tax,
+        tax_mode: tax.tax_mode
+      });
+    } catch (err: any) {
+      validationErrors.push({ row: index + 1, error: err?.message || "Invalid row." });
     }
+  }
 
-    let txDate = String(r.transaction_date || "").split("T")[0];
-    if (!txDate || !/^\d{4}-\d{2}-\d{2}$/.test(txDate)) {
-      txDate = getUAECurrentDate();
-    }
+  if (validationErrors.length > 0) {
+    return res.status(422).json({
+      success: false,
+      inserted: 0,
+      errors: validationErrors,
+      message: "Import rejected. No records were sent to the database because one or more rows failed validation."
+    });
+  }
 
-    const partyNameRaw = String(r.party_name || "").trim();
-    const partyNameLower = partyNameRaw.toLowerCase();
-    const rawTypeLower = String(r.transaction_type || "").trim().toLowerCase();
-    const invNoLower = String(r.invoice_no || "").trim().toLowerCase();
-
-    let txType = forced_type ? normalizeTransactionType(forced_type) : normalizeTransactionType(r.transaction_type);
-    const invNo = r.invoice_no !== undefined && r.invoice_no !== null ? String(r.invoice_no).trim() : "";
-
-    return {
-      transaction_type: txType,
-      transaction_date: txDate,
-      invoice_no: invNo,
-      party_name: String(r.party_name || "UNKNOWN_PARTY").trim(),
-      trn: trnDigits || trnRaw || "000000000000000",
-      amount_before_tax: isNaN(amountBeforeTax) ? 0.0 : amountBeforeTax,
-      vat_rate: isNaN(vatRate) ? 0.05 : vatRate,
-      vat_amount: isNaN(vatAmount) ? 0.0 : vatAmount,
-      amount_with_tax: isNaN(amountWithTax) ? 0.0 : amountWithTax,
-      tax_mode: taxMode
-    };
-  });
-
-  // Check for and skip duplicates during batch import using strict 100% all-column matching (both DB and intra-batch)
-  let rowsToInsert = cleanedRows;
   try {
-    const existingList = await fetchAllSupabaseTransactions(url, key, "created_at.asc", "*");
-    const seenFingerprints = new Set(existingList.map(ex => getTransactionStrictFingerprint(ex)));
-    rowsToInsert = [];
-    for (const nr of cleanedRows) {
-      const fp = getTransactionStrictFingerprint(nr);
-      if (!seenFingerprints.has(fp)) {
-        seenFingerprints.add(fp);
-        rowsToInsert.push(nr);
-      }
-    }
-  } catch (dupCheckErr) {
-    console.warn("Duplicate check pre-fetch skipped:", dupCheckErr);
-  }
-
-  if (rowsToInsert.length === 0) {
-    return res.json({ success: true, inserted: 0, skipped_duplicates: cleanedRows.length, errors: [], message: "All imported rows were duplicates and skipped." });
-  }
-
-  // ATOMIC BATCH IMPORT (CQ-07):
-  // PostgREST executes a single POST request with a JSON array as a single atomic PostgreSQL transaction.
-  // If any row fails, PostgreSQL rolls back the entire batch insert so no partial data remains.
-  try {
-    const response = await fetch(`${url}/rest/v1/transactions`, {
+    const response = await fetch(`${url}/rest/v1/rpc/import_transactions_batch`, {
       method: "POST",
       headers: {
         apikey: key,
         Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        Prefer: "return=representation"
+        "Content-Type": "application/json"
       },
-      body: JSON.stringify(rowsToInsert)
+      body: JSON.stringify({ rows: preparedRows })
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(400).json({
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({
         success: false,
-        error: `Atomic batch import failed and was completely rolled back: ${errText}`,
         inserted: 0,
-        errors: [{ error: errText }]
+        errors: [{ error: errText || "Atomic batch procedure rejected the import." }],
+        message: "Atomic batch import failed. No partial success is reported."
       });
     }
 
-    const insertedData = await response.json();
-    const count = Array.isArray(insertedData) ? insertedData.length : rowsToInsert.length;
-
+    const result = await response.json().catch(() => null);
     return res.json({
       success: true,
-      inserted: count,
-      skipped_duplicates: cleanedRows.length - rowsToInsert.length,
+      inserted: preparedRows.length,
+      skipped_duplicates: 0,
       errors: [],
-      message: `Successfully and atomically imported ${count} transactions.`
+      procedure_result: result,
+      message: `Successfully and atomically imported ${preparedRows.length} transactions.`
     });
   } catch (err: any) {
-    return res.status(500).json({
+    return res.status(503).json({
       success: false,
-      error: `Network or database error during atomic batch import (0 rows saved): ${err.message}`,
-      inserted: 0
+      inserted: 0,
+      errors: [{ error: "Database connection unavailable during atomic import." }],
+      message: err?.message || "Atomic batch import could not be completed."
     });
   }
 });
 
-// 1. Scan Database Transactions for 100% Exact Duplicates (Preview Mode - No Deletion)
-app.get("/api/transactions/scan-duplicates", requireOwner, async (req: Request, res: Response) => {
+// 5. Duplicate scanningapp.get("/api/transactions/scan-duplicates", requireOwner, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
   try {
     const allTx: any[] = await fetchAllSupabaseTransactions(url, key, "created_at.asc", "*");
