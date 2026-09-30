@@ -323,34 +323,8 @@ function writeConfigJson(data: any) {
   fs.writeFileSync(cfgPath, JSON.stringify(data, null, 2), "utf-8");
 }
 
-function updateEnvFile(url: string, key: string) {
-  const envPath = path.join(process.cwd(), ".env");
-  let content = "";
-  if (fs.existsSync(envPath)) {
-    content = fs.readFileSync(envPath, "utf-8");
-  }
-  const lines = content.split(/\r?\n/);
-  let urlSet = false;
-  let keySet = false;
-  const newLines = lines.map(line => {
-    if (line.startsWith("SUPABASE_URL=") || line.startsWith("export SUPABASE_URL=")) {
-      urlSet = true;
-      return `SUPABASE_URL=${url}`;
-    }
-    if (line.startsWith("SUPABASE_KEY=") || line.startsWith("export SUPABASE_KEY=")) {
-      keySet = true;
-      return `SUPABASE_KEY=${key}`;
-    }
-    return line;
-  });
-  if (!urlSet) newLines.push(`SUPABASE_URL=${url}`);
-  if (!keySet) newLines.push(`SUPABASE_KEY=${key}`);
-  fs.writeFileSync(envPath, newLines.filter(Boolean).join("\n") + "\n", "utf-8");
-  process.env.SUPABASE_URL = url;
-  process.env.SUPABASE_KEY = key;
-}
-
-// Helper to safely get Supabase credentials with fallback defaults
+// Production database credentials are deployment-managed and never written to .env by an API request.
+// Helper to safely get Supabase credentials from trusted server configuration.
 function getSupabaseConfig(): { url: string; key: string } {
   return { url: SUPABASE_URL, key: SUPABASE_KEY };
 }
@@ -907,17 +881,20 @@ app.post("/api/settings/recipients", requireOwner, async (req: Request, res: Res
 app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, res: Response) => {
   const cronSecret = (process.env.CRON_SECRET || "").trim();
   const authHeader = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
-  const cronHeader = typeof req.headers["x-cron-secret"] === "string" ? req.headers["x-cron-secret"].trim() : "";
+  const configuredCronHeader = typeof req.headers["x-cron-secret"] === "string" ? req.headers["x-cron-secret"].trim() : "";
 
   let authorized = false;
+
   if (authHeader.startsWith("Bearer ")) {
     const token = authHeader.slice(7).trim();
     const user = verifyAuthToken(token);
-    authorized = Boolean(user && String(user.role).toLowerCase() === "owner");
+    if (user && String(user.role).toLowerCase() === "owner") {
+      authorized = true;
+    }
   }
 
-  if (!authorized && cronSecret && cronHeader) {
-    const actual = Buffer.from(cronHeader);
+  if (!authorized && cronSecret && configuredCronHeader) {
+    const actual = Buffer.from(configuredCronHeader);
     const expected = Buffer.from(cronSecret);
     authorized = actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
   }
@@ -929,7 +906,7 @@ app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, re
   if (isProd) {
     return res.status(503).json({
       success: false,
-      error: "Daily report worker is not available in the Node.js production container."
+      error: "Daily report worker is not enabled in the Node.js production container."
     });
   }
 
@@ -941,20 +918,20 @@ app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, re
   if (dryRun) args.push("--dry-run");
 
   const { spawn } = await import("child_process");
-  const py = spawn("python3", args, { cwd: process.cwd() });
+  const child = spawn("python3", args, { cwd: process.cwd() });
   let stdout = "";
   let stderr = "";
 
-  py.stdout.on("data", (data) => { stdout += data.toString(); });
-  py.stderr.on("data", (data) => { stderr += data.toString(); });
+  child.stdout.on("data", data => { stdout += data.toString(); });
+  child.stderr.on("data", data => { stderr += data.toString(); });
 
-  py.on("close", (code) => {
+  child.on("close", code => {
     if (code === 0) return res.json({ success: true, stdout });
     return res.status(500).json({ success: false, error: stderr || stdout || `Process exited with code ${code}` });
   });
 });
 
-// 2. Suppliers Endpoints// 2. Suppliers Endpoints// 2. Suppliers Endpoints (Both Owner & Clerk can read and create)
+// 2. Suppliers Endpoints// 2. Suppliers Endpoints// 2. Suppliers Endpoints// 2. Suppliers Endpoints (Both Owner & Clerk can read and create)
 app.get("/api/suppliers", requireAuth, async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
   const cfg = readConfigJson();
