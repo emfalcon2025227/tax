@@ -324,6 +324,8 @@ function writeConfigJson(data: any) {
 // ============================================================================
 
 // 0. Authentication & User Management Routes
+// Production authentication is database-backed through public.users.
+// Development-only environment users are supported when explicitly configured in .env.
 interface PersistedUser {
   id: string;
   username: string;
@@ -332,39 +334,13 @@ interface PersistedUser {
   created_at: string;
 }
 
-const USERS_FILE_PATH = path.join(process.cwd(), "users.json");
-
-function loadPersistedUsers(): PersistedUser[] {
-  if (fs.existsSync(USERS_FILE_PATH)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(USERS_FILE_PATH, "utf-8"));
-      if (Array.isArray(data)) return data;
-    } catch (err) {
-      console.warn("[USERS] Failed to load users.json:", err);
-    }
-  }
-  return [];
-}
-
-function savePersistedUsers(users: PersistedUser[]) {
-  try {
-    const tempPath = USERS_FILE_PATH + ".tmp";
-    fs.writeFileSync(tempPath, JSON.stringify(users, null, 2), "utf-8");
-    fs.renameSync(tempPath, USERS_FILE_PATH);
-  } catch (err) {
-    console.error("[USERS] Failed to save users.json atomically:", err);
-  }
-}
-
 const MEMORY_USERS: Array<PersistedUser> = [];
+const configuredOwnerUser = String(process.env.OWNER_USER || "").trim();
+const configuredOwnerPass = String(process.env.OWNER_PASS || "");
+const configuredClerkUser = String(process.env.CLERK_USER || "").trim();
+const configuredClerkPass = String(process.env.CLERK_PASS || "");
 
-// 1. Environment variable configured custom accounts (take highest priority)
-const configuredOwnerUser = (process.env.OWNER_USER || "").trim();
-const configuredOwnerPass = process.env.OWNER_PASS || "";
-const configuredClerkUser = (process.env.CLERK_USER || "").trim();
-const configuredClerkPass = process.env.CLERK_PASS || "";
-
-if (configuredOwnerUser && configuredOwnerPass) {
+if (!isProd && configuredOwnerUser && configuredOwnerPass) {
   MEMORY_USERS.push({
     id: "env-owner-custom",
     username: configuredOwnerUser,
@@ -373,8 +349,8 @@ if (configuredOwnerUser && configuredOwnerPass) {
     created_at: new Date().toISOString()
   });
 }
-
-if (configuredClerkUser && configuredClerkPass && configuredClerkUser.toLowerCase() !== configuredOwnerUser.toLowerCase()) {
+if (!isProd && configuredClerkUser && configuredClerkPass &&
+    configuredClerkUser.toLowerCase() !== configuredOwnerUser.toLowerCase()) {
   MEMORY_USERS.push({
     id: "env-clerk-custom",
     username: configuredClerkUser,
@@ -383,8 +359,6 @@ if (configuredClerkUser && configuredClerkPass && configuredClerkUser.toLowerCas
     created_at: new Date().toISOString()
   });
 }
-
-// No hardcoded default credentials. Local development may use explicit OWNER_* / CLERK_* environment variables.
 
 app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
   const { username } = req.body;
@@ -405,7 +379,6 @@ app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
   let authenticatedUser: { username: string; role: "Owner" | "Clerk" } | null = null;
   let authStage: "AUTH_USER_NOT_FOUND" | "AUTH_PASSWORD_MISMATCH" | "AUTH_INVALID_ROLE" | "AUTH_DATABASE_ERROR" | "AUTH_SUCCESS" = "AUTH_USER_NOT_FOUND";
   let userFoundInDb = false;
-  let userFoundInMem = false;
   let databaseError = false;
 
   // 1. Authenticate against Supabase Database Users Table (Case-Insensitive Search)
@@ -470,8 +443,12 @@ app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
       }
     } else {
       console.warn(`[AUTH] Supabase user lookup returned status ${srvRes.status}`);
-      databaseError = true;
-      authStage = "AUTH_DATABASE_ERROR";
+      if (srvRes.status === 404) {
+        authStage = "AUTH_USER_NOT_FOUND";
+      } else {
+        databaseError = true;
+        authStage = "AUTH_DATABASE_ERROR";
+      }
     }
   } catch (err) {
     console.warn("[AUTH] Supabase user query notice:", err);
@@ -483,21 +460,20 @@ app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
   if (!authenticatedUser && !isProd) {
     for (const mu of MEMORY_USERS) {
       if (mu.username.toLowerCase() === u) {
-        userFoundInMem = true;
         const match = await bcrypt.compare(password, mu.passwordHash);
         if (match) {
           authenticatedUser = { username: mu.username, role: mu.role };
           authStage = "AUTH_SUCCESS";
-          break;
         } else {
           authStage = "AUTH_PASSWORD_MISMATCH";
         }
+        break;
       }
     }
   }
 
   // Safe internal diagnostics logging (No passwords, hashes, JWTs, or secret keys exposed)
-  console.log(`[AUTH-DIAG] userFound=${userFoundInDb || userFoundInMem} userIdPresent=${!!authenticatedUser} passwordFieldPresent=true passwordHashFormat=bcrypt role=${authenticatedUser?.role || "none"} stage=${authStage}`);
+  console.log(`[AUTH-DIAG] userFound=${userFoundInDb} userIdPresent=${!!authenticatedUser} passwordFieldPresent=true passwordHashFormat=bcrypt role=${authenticatedUser?.role || "none"} stage=${authStage}`);
 
   // 3. Fail-safe production database outage check
   if (databaseError && isProd) {
@@ -756,56 +732,38 @@ app.delete("/api/users/:identifier", requireOwner, async (req: Request, res: Res
 });
 
 // 0.1 Settings & Dynamic Supabase Configuration (Owner Only)
-app.get("/api/settings", requireOwner, (req: Request, res: Response) => {
-  const { url, key } = getSupabaseConfig();
+app.get("/api/settings", requireOwner, (_req: Request, res: Response) => {
   const cfg = readConfigJson();
-  let maskedKey = "";
-  if (key) {
-    if (key.length > 8) {
-      maskedKey = key.slice(0, 4) + "•".repeat(key.length - 8) + key.slice(-4);
-    } else {
-      maskedKey = "••••••••";
-    }
-  }
-  res.json({
+  return res.json({
     success: true,
-    supabase_url: url,
-    supabase_key: "",
-    supabase_key_masked: maskedKey,
-    has_supabase_key: Boolean(key),
-    default_vat_rate: cfg.default_vat_rate ?? 5.0
+    database: {
+      configured: true,
+      host: new URL(SUPABASE_URL).hostname
+    },
+    default_vat_rate: Number(cfg.default_vat_rate ?? 5.0)
   });
 });
 
 app.post("/api/settings", requireOwner, (req: Request, res: Response) => {
-  const { supabase_url, supabase_key, default_vat_rate } = req.body;
-  if (!supabase_url) {
-    return res.status(400).json({ error: "SUPABASE_URL is required." });
+  const vatRate = Number(req.body?.default_vat_rate);
+  if (!Number.isFinite(vatRate) || vatRate < 0 || vatRate > 100) {
+    return res.status(400).json({ success: false, error: "default_vat_rate must be a number between 0 and 100." });
   }
-  const currentCfg = getSupabaseConfig();
-  const keyToSave = (!supabase_key || supabase_key.includes("•") || supabase_key === "") ? currentCfg.key : supabase_key;
-  if (!keyToSave) {
-    return res.status(400).json({ error: "SUPABASE_KEY is required." });
-  }
-  const vatRate = parseFloat(default_vat_rate) || 5.0;
-  updateEnvFile(supabase_url.trim(), keyToSave.trim());
-  writeConfigJson({ default_vat_rate: vatRate });
-  res.json({
+  writeConfigJson({ ...readConfigJson(), default_vat_rate: Math.round(vatRate * 100) / 100 });
+  return res.json({
     success: true,
-    message: "Settings saved successfully! Database credentials updated and client reloaded.",
-    supabase_url: supabase_url.trim(),
-    default_vat_rate: vatRate
+    message: "Application settings saved successfully.",
+    default_vat_rate: Math.round(vatRate * 100) / 100
   });
 });
 
-// 0.2 Report Recipients Settings
 app.get("/api/settings/recipients", requireAuth, async (req: Request, res: Response) => {
   try {
     const { url, key } = getSupabaseConfig();
     let recipients: string[] = [];
     if (url && key) {
       try {
-        const resp = await fetch(`${url.replace(/\/+$/, "")}/rest/v1/settings?key=eq.daily_report_recipients&select=value`, {
+        const resp = await fetch(`${url.replace(/\/+$/, "")}/rest/v1/settings?id=eq.report_recipients&select=value`, {
           headers: { apikey: key, Authorization: `Bearer ${key}` }
         });
         if (resp.ok) {
@@ -858,7 +816,7 @@ app.post("/api/settings/recipients", requireOwner, async (req: Request, res: Res
             Prefer: "resolution=merge-duplicates"
           },
           body: JSON.stringify({
-            key: "daily_report_recipients",
+            id: "report_recipients",
             value: JSON.stringify(list),
             updated_at: new Date().toISOString()
           })
@@ -876,32 +834,22 @@ app.post("/api/settings/recipients", requireOwner, async (req: Request, res: Res
 
 // 0.3 Daily Financial Report Cron Endpoint
 app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, res: Response) => {
-  const cronSecret = process.env.CRON_SECRET || "uae_accounting_cron_secret_2026";
-  const authHeader = req.headers.authorization || "";
-  const cronHeader = (req.headers["x-cron-secret"] as string) || "";
-  const qSecret = (req.query.secret as string) || "";
-  const bSecret = (req.body?.secret as string) || "";
-
+  const cronSecret = String(process.env.CRON_SECRET || "").trim();
+  const cronHeader = String(req.headers["x-cron-secret"] || "").trim();
   let authorized = false;
-  if (authHeader.startsWith("Bearer ")) {
-    const token = authHeader.slice(7).trim();
-    if (token === cronSecret) {
-      authorized = true;
-    } else {
-      const user = verifyAuthToken(token);
-      if (user && String(user.role).toLowerCase() === "owner") {
-        authorized = true;
-      }
-    }
-  }
-  if (!authorized && (cronHeader === cronSecret || qSecret === cronSecret || bSecret === cronSecret)) {
+
+  if (cronSecret && cronHeader && cronHeader.length === cronSecret.length &&
+      crypto.timingSafeEqual(Buffer.from(cronHeader), Buffer.from(cronSecret))) {
     authorized = true;
+  } else {
+    const user = getAuthUser(req);
+    authorized = Boolean(user && String(user.role).toLowerCase() === "owner");
   }
 
   if (!authorized) {
-    return res.status(401).json({
+    return res.status(cronSecret ? 401 : 503).json({
       success: false,
-      error: "Unauthorized: Invalid or missing CRON_SECRET."
+      error: cronSecret ? "Unauthorized." : "Daily report is not securely configured."
     });
   }
 
@@ -943,56 +891,77 @@ app.all(["/api/cron/daily-report", "/api/daily-report"], async (req: Request, re
   });
 });
 
-app.post("/api/test-connection", requireOwner, async (req: Request, res: Response) => {
-  const targetUrl = (req.body.supabase_url || process.env.SUPABASE_URL || "https://frmgpbwbmarkatjroflr.supabase.co").replace(/\/+$/, "");
-  const targetKey = req.body.supabase_key || process.env.SUPABASE_KEY || "sb_secret_lESPIyr1EUoMeckMYNPhBQ_wOBAaMya";
+app.post("/api/test-connection", requireOwner, async (_req: Request, res: Response) => {
+  const { url, key } = getSupabaseConfig();
   try {
-    const check = await fetch(`${targetUrl}/rest/v1/suppliers?select=name,trn&limit=1`, {
-      headers: {
-        apikey: targetKey,
-        Authorization: `Bearer ${targetKey}`
-      }
+    const check = await fetch(`${url}/rest/v1/suppliers?select=id&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` }
     });
     if (!check.ok) {
-      const errText = await check.text();
-      return res.json({ status: "error", message: `Supabase returned HTTP ${check.status}: ${errText}` });
+      return res.status(502).json({
+        status: "error",
+        message: `Supabase returned HTTP ${check.status}.`
+      });
     }
-    const data = await check.json();
     return res.json({
       status: "success",
-      message: `Connection verified successfully! Queried 'suppliers' table (${Array.isArray(data) ? data.length : 1} row checked).`
+      message: "Database connection verified successfully."
     });
-  } catch (err: any) {
-    return res.json({ status: "error", message: err.message || "Network error connecting to Supabase" });
+  } catch {
+    return res.status(503).json({
+      status: "error",
+      message: "Database connection is unavailable."
+    });
   }
 });
 
 // 1. Health & Connection Status
-app.get("/api/health", (req: Request, res: Response) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+let supabaseConnected = false;
+let lastSupabaseCheckAt = 0;
+
+async function verifySupabaseConnection(): Promise<boolean> {
+  const { url, key } = getSupabaseConfig();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(`${url}/rest/v1/suppliers?select=id&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+      signal: controller.signal
+    });
+    supabaseConnected = response.ok;
+    lastSupabaseCheckAt = Date.now();
+    return supabaseConnected;
+  } catch {
+    supabaseConnected = false;
+    lastSupabaseCheckAt = Date.now();
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+app.get("/_health", (_req: Request, res: Response) => {
+  return res.status(supabaseConnected ? 200 : 503).json({
+    status: supabaseConnected ? "healthy" : "degraded",
+    supabase_connected: supabaseConnected
+  });
 });
 
-app.get("/api/status", async (req: Request, res: Response) => {
-  const { url, key } = getSupabaseConfig();
-  try {
-    const check = await fetch(`${url}/rest/v1/suppliers?select=id&limit=1`, {
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`
-      }
-    });
-    res.json({
-      status: "ok",
-      supabase_connected: check.ok,
-      url: url.replace(/https?:\/\//, "").split(".")[0] + ".supabase.co"
-    });
-  } catch (err: any) {
-    res.json({
-      status: "ok",
-      supabase_connected: false,
-      error: err.message
-    });
-  }
+app.get("/api/health", (_req: Request, res: Response) => {
+  return res.status(200).json({
+    status: "ok",
+    supabase_connected: supabaseConnected,
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get("/api/status", async (_req: Request, res: Response) => {
+  const connected = await verifySupabaseConnection();
+  return res.status(connected ? 200 : 503).json({
+    status: connected ? "ok" : "degraded",
+    supabase_connected: connected,
+    checked_at: new Date().toISOString()
+  });
 });
 
 // 2. Suppliers Endpoints (Both Owner & Clerk can read and create)
@@ -1648,158 +1617,14 @@ app.delete(["/api/transactions/:id", "/api/transactions"], requireOwner, async (
 
 // 3.3 Danger Zone: Destructive Actions Suite Endpoint (POST Method - Owner Only)
 app.post("/api/settings/reset_data", resetDataLimiter, requireOwner, async (req: Request, res: Response) => {
-  const { url, key } = getSupabaseConfig();
-  const actor = (req as any).user?.username || "Owner";
-  const actionType = String(
-    req.body?.action_type || req.body?.transaction_type || req.body?.type_to_reset || ""
-  ).toLowerCase().trim();
-  const confirmPhrase = String(req.body?.confirm_phrase || req.body?.confirmText || "").trim();
-
-  try {
-    const headers = {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-      Prefer: "return=representation"
-    };
-
-    if (actionType === "sales" || actionType === "reset_sales") {
-      if (confirmPhrase !== "DELETE ALL SALES") {
-        auditLog(actor, "DANGER_ZONE_RESET_REJECTED", "sales", "FAILURE", { reason: "Invalid confirmation phrase" });
-        return res.status(400).json({
-          success: false,
-          error: "Confirmation failed: You must type 'DELETE ALL SALES' to reset sales transactions."
-        });
-      }
-      const response = await fetch(`${url}/rest/v1/transactions?transaction_type=eq.sales`, { method: "DELETE", headers });
-      if (!response.ok) {
-        const errText = await response.text();
-        return res.status(500).json({ success: false, error: errText || `HTTP ${response.status} from Supabase` });
-      }
-      const data = await response.json().catch(() => []);
-      const deletedCount = Array.isArray(data) ? data.length : 0;
-      auditLog(actor, "DANGER_ZONE_RESET", "sales", "SUCCESS", { actionType: "sales", deleted_count: deletedCount });
-      return res.json({ success: true, action_type: "sales", deleted_count: deletedCount, message: "Successfully deleted all SALES transactions." });
-    }
-
-    if (actionType === "purchases" || actionType === "reset_purchases") {
-      if (confirmPhrase !== "DELETE ALL PURCHASES") {
-        auditLog(actor, "DANGER_ZONE_RESET_REJECTED", "purchases", "FAILURE", { reason: "Invalid confirmation phrase" });
-        return res.status(400).json({
-          success: false,
-          error: "Confirmation failed: You must type 'DELETE ALL PURCHASES' to reset purchase transactions."
-        });
-      }
-      const response = await fetch(`${url}/rest/v1/transactions?transaction_type=eq.purchases`, { method: "DELETE", headers });
-      if (!response.ok) {
-        const errText = await response.text();
-        return res.status(500).json({ success: false, error: errText || `HTTP ${response.status} from Supabase` });
-      }
-      const data = await response.json().catch(() => []);
-      const deletedCount = Array.isArray(data) ? data.length : 0;
-      auditLog(actor, "DANGER_ZONE_RESET", "purchases", "SUCCESS", { actionType: "purchases", deleted_count: deletedCount });
-      return res.json({ success: true, action_type: "purchases", deleted_count: deletedCount, message: "Successfully deleted all PURCHASES transactions." });
-    }
-
-    if (actionType === "single_supplier" || actionType === "delete_single_supplier") {
-      const supplierIdOrTrn = String(req.body?.supplier_identifier || req.body?.trn || req.body?.id || "").trim();
-      if (!supplierIdOrTrn) {
-        return res.status(400).json({ success: false, error: "Missing supplier identifier (TRN or ID)." });
-      }
-
-      // Foreign Key / Relational Integrity Check
-      const chkResp = await fetch(`${url}/rest/v1/transactions?select=id&trn=eq.${encodeURIComponent(supplierIdOrTrn)}`, { headers });
-      if (chkResp.ok) {
-        const chkData = await chkResp.json().catch(() => []);
-        if (Array.isArray(chkData) && chkData.length > 0) {
-          return res.status(500).json({
-            success: false,
-            error: `Foreign Key / Relational Integrity Violation: Supplier '${supplierIdOrTrn}' has ${chkData.length} existing transactions. Delete those transactions first.`
-          });
-        }
-      }
-
-      let delFilter = "";
-      if (/^\d{15}$/.test(supplierIdOrTrn)) {
-        delFilter = `trn=eq.${encodeURIComponent(supplierIdOrTrn)}`;
-      } else if (/^\d+$/.test(supplierIdOrTrn) && supplierIdOrTrn.length < 12) {
-        delFilter = `or=(id.eq.${encodeURIComponent(supplierIdOrTrn)},trn.eq.${encodeURIComponent(supplierIdOrTrn)})`;
-      } else {
-        delFilter = `or=(name.eq.${encodeURIComponent(supplierIdOrTrn)},trn.eq.${encodeURIComponent(supplierIdOrTrn)})`;
-      }
-
-      const response = await fetch(`${url}/rest/v1/suppliers?${delFilter}`, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
-      if (!response.ok) {
-        const errText = await response.text();
-        return res.status(500).json({ success: false, error: errText || `HTTP ${response.status} from Supabase` });
-      }
-      const data = await response.json().catch(() => []);
-      return res.json({ success: true, action_type: "single_supplier", deleted_count: Array.isArray(data) ? data.length : 0, message: `Supplier '${supplierIdOrTrn}' deleted successfully.` });
-    }
-
-    if (actionType === "all_suppliers" || actionType === "reset_suppliers") {
-      const chkResp = await fetch(`${url}/rest/v1/transactions?select=id&limit=1`, { headers });
-      if (chkResp.ok) {
-        const chkData = await chkResp.json().catch(() => []);
-        if (Array.isArray(chkData) && chkData.length > 0) {
-          return res.status(500).json({
-            success: false,
-            error: "Relational Constraint Violation: Cannot delete all suppliers while transaction records exist. Run Factory Reset or clear transactions first."
-          });
-        }
-      }
-
-      const response = await fetch(`${url}/rest/v1/suppliers?trn=not.is.null`, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
-      if (!response.ok) {
-        const errText = await response.text();
-        return res.status(500).json({ success: false, error: errText || `HTTP ${response.status} from Supabase` });
-      }
-      const data = await response.json().catch(() => []);
-      return res.json({ success: true, action_type: "all_suppliers", deleted_count: Array.isArray(data) ? data.length : 0, message: "Successfully deleted all registered suppliers." });
-    }
-
-    if (actionType === "factory_reset" || actionType === "wipe_database" || actionType === "reset_all") {
-      if (confirmPhrase !== "WIPE ENTIRE DATABASE") {
-        auditLog(actor, "DANGER_ZONE_RESET_REJECTED", "factory_reset", "FAILURE", { reason: "Invalid confirmation phrase" });
-        return res.status(400).json({
-          success: false,
-          error: "Confirmation failed: You must type 'WIPE ENTIRE DATABASE' to perform factory reset."
-        });
-      }
-      // 1. Delete transactions first
-      const txResp = await fetch(`${url}/rest/v1/transactions?id=neq.0`, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
-      if (!txResp.ok) {
-        const errText = await txResp.text();
-        return res.status(500).json({ success: false, error: `Failed to wipe transactions: ${errText}` });
-      }
-      const txData = await txResp.json().catch(() => []);
-
-      // 2. Delete suppliers
-      const supResp = await fetch(`${url}/rest/v1/suppliers?trn=not.is.null`, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
-      if (!supResp.ok) {
-        const errText = await supResp.text();
-        return res.status(500).json({ success: false, error: `Failed to wipe suppliers: ${errText}` });
-      }
-      const supData = await supResp.json().catch(() => []);
-
-      return res.json({
-        success: true,
-        action_type: "factory_reset",
-        transactions_deleted: Array.isArray(txData) ? txData.length : 0,
-        suppliers_deleted: Array.isArray(supData) ? supData.length : 0,
-        message: "Factory Reset Complete! Database completely wiped."
-      });
-    }
-
-    return res.status(400).json({
-      success: false,
-      error: `Invalid action_type: '${actionType}'. Supported actions: 'sales', 'purchases', 'single_supplier', 'all_suppliers', or 'factory_reset'.`
-    });
-
-  } catch (err: any) {
-    console.error(`[SERVER] Exception in reset_data (${actionType}):`, err);
-    return res.status(500).json({ success: false, error: err.message || String(err) });
-  }
+  const actor = String((req as any).user?.username || "unknown");
+  auditLog(actor, "DANGER_ZONE_RESET_BLOCKED", "production_database", "FAILURE", {
+    reason: "Destructive database reset is permanently disabled."
+  });
+  return res.status(403).json({
+    success: false,
+    error: "Destructive database reset is permanently disabled in this application."
+  });
 });
 
 // Helper to safely clean numeric values from CSV imports without NaN
@@ -2524,6 +2349,10 @@ app.all(["/api/export/pdf/purchases"], requireOwner, async (req: Request, res: R
   }
 });
 
+app.use("/api", (_req: Request, res: Response) => {
+  return res.status(404).json({ success: false, error: "API endpoint not found." });
+});
+
 // ============================================================================
 // SERVER INITIALIZATION & VITE MIDDLEWARE
 // ============================================================================
@@ -2562,8 +2391,14 @@ async function startServer() {
     });
   }
 
+  await verifySupabaseConnection();
+  setInterval(() => {
+    verifySupabaseConnection().catch(() => undefined);
+  }, 5 * 60 * 1000).unref();
+
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[SERVER] Full-Stack Accounting Server running on http://0.0.0.0:${PORT}`);
+    console.log(`[SERVER] Supabase connection at startup: ${supabaseConnected ? "verified" : "unavailable"}`);
   });
 }
 
