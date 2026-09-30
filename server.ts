@@ -324,42 +324,7 @@ function writeConfigJson(data: any) {
 // ============================================================================
 
 // 0. Authentication & User Management Routes
-// Production authentication is database-backed through public.users.
-// Development-only environment users are supported when explicitly configured in .env.
-interface PersistedUser {
-  id: string;
-  username: string;
-  passwordHash: string;
-  role: "Owner" | "Clerk";
-  created_at: string;
-}
-
-const MEMORY_USERS: Array<PersistedUser> = [];
-const configuredOwnerUser = String(process.env.OWNER_USER || "").trim();
-const configuredOwnerPass = String(process.env.OWNER_PASS || "");
-const configuredClerkUser = String(process.env.CLERK_USER || "").trim();
-const configuredClerkPass = String(process.env.CLERK_PASS || "");
-
-if (!isProd && configuredOwnerUser && configuredOwnerPass) {
-  MEMORY_USERS.push({
-    id: "env-owner-custom",
-    username: configuredOwnerUser,
-    passwordHash: bcrypt.hashSync(configuredOwnerPass, 12),
-    role: "Owner",
-    created_at: new Date().toISOString()
-  });
-}
-if (!isProd && configuredClerkUser && configuredClerkPass &&
-    configuredClerkUser.toLowerCase() !== configuredOwnerUser.toLowerCase()) {
-  MEMORY_USERS.push({
-    id: "env-clerk-custom",
-    username: configuredClerkUser,
-    passwordHash: bcrypt.hashSync(configuredClerkPass, 12),
-    role: "Clerk",
-    created_at: new Date().toISOString()
-  });
-}
-
+// Production identity is authoritative in public.users. No hardcoded or file-backed production users.
 app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
   const { username } = req.body;
   const rawUser = String(username || "").trim();
@@ -456,22 +421,6 @@ app.post("/api/login", authLimiter, async (req: Request, res: Response) => {
     authStage = "AUTH_DATABASE_ERROR";
   }
 
-  // 2. Check seed/memory user store (FORBIDDEN IN PRODUCTION - fallback restricted to local dev sandbox environments only)
-  if (!authenticatedUser && !isProd) {
-    for (const mu of MEMORY_USERS) {
-      if (mu.username.toLowerCase() === u) {
-        const match = await bcrypt.compare(password, mu.passwordHash);
-        if (match) {
-          authenticatedUser = { username: mu.username, role: mu.role };
-          authStage = "AUTH_SUCCESS";
-        } else {
-          authStage = "AUTH_PASSWORD_MISMATCH";
-        }
-        break;
-      }
-    }
-  }
-
   // Safe internal diagnostics logging (No passwords, hashes, JWTs, or secret keys exposed)
   console.log(`[AUTH-DIAG] userFound=${userFoundInDb} userIdPresent=${!!authenticatedUser} passwordFieldPresent=true passwordHashFormat=bcrypt role=${authenticatedUser?.role || "none"} stage=${authStage}`);
 
@@ -508,81 +457,42 @@ app.get("/api/auth/me", requireAuth, (req: Request, res: Response) => {
 });
 
 // User Management API Endpoints (Owner Only) - Rate Limited with userMutationLimiter
-app.get("/api/users", requireOwner, async (req: Request, res: Response) => {
+app.get("/api/users", requireOwner, async (_req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
-  let supabaseUsers: any[] = [];
-
   try {
-    const srvRes = await fetch(`${url}/rest/v1/users?select=id,username,role,created_at`, {
+    const response = await fetch(`${url}/rest/v1/users?select=id,username,email,role,created_at&order=username.asc`, {
       headers: { apikey: key, Authorization: `Bearer ${key}` }
     });
-    if (srvRes.ok) {
-      const data = await srvRes.json();
-      if (Array.isArray(data)) supabaseUsers = data;
+    if (!response.ok) {
+      return res.status(response.status).json({ success: false, error: "Unable to load users from the database." });
     }
-  } catch (err) {
-    console.warn("[USERS] Fetch users from Supabase notice:", err);
+    const users = await response.json();
+    return res.json({ success: true, users: Array.isArray(users) ? users : [] });
+  } catch {
+    return res.status(503).json({ success: false, error: "User directory is temporarily unavailable." });
   }
-
-  // Merge users from MEMORY_USERS and Supabase list, keeping usernames unique
-  const mergedMap = new Map<string, any>();
-
-  // 1. Populate with all local memory users
-  MEMORY_USERS.forEach(mu => {
-    mergedMap.set(mu.username.toLowerCase().trim(), {
-      id: mu.id,
-      username: mu.username,
-      role: mu.role,
-      created_at: mu.created_at
-    });
-  });
-
-  // 2. Merge Supabase users
-  supabaseUsers.forEach(su => {
-    if (su && su.username) {
-      const uname = String(su.username).toLowerCase().trim();
-      const existing = mergedMap.get(uname);
-      mergedMap.set(uname, {
-        id: existing?.id || su.id || `user-${Date.now()}`,
-        username: su.username,
-        role: su.role || existing?.role || "Clerk",
-        created_at: su.created_at || existing?.created_at || new Date().toISOString()
-      });
-    }
-  });
-
-  const usersList = Array.from(mergedMap.values());
-  return res.json({ success: true, users: usersList });
 });
 
 app.post("/api/users", userMutationLimiter, requireOwner, async (req: Request, res: Response) => {
-  const { username, role } = req.body;
-  const rawUser = String(username || "").trim();
-  // Passwords MUST NOT be trimmed; preserve exact character sequence entered by user
-  const password = typeof req.body.password === "string" ? req.body.password : "";
-  const rawRole: "Clerk" | "Owner" = String(role || "Owner").trim().toLowerCase() === "clerk" ? "Clerk" : "Owner";
+  const username = String(req.body?.username || "").trim();
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const roleInput = String(req.body?.role || "").trim().toLowerCase();
 
-  // Strict Input Validation
-  if (!rawUser || rawUser.length < 3 || rawUser.length > 50 || !/^[a-zA-Z0-9_.-]+$/.test(rawUser)) {
-    return res.status(400).json({ success: false, error: "Username must be 3-50 alphanumeric characters (or _ . -)." });
+  if (!/^[a-zA-Z0-9_.-]{3,50}$/.test(username)) {
+    return res.status(400).json({ success: false, error: "Username must be 3-50 characters using letters, numbers, _, . or -." });
   }
-
-  if (!password || password.length < 6) {
+  if (password.length < 6) {
     return res.status(400).json({ success: false, error: "Password must be at least 6 characters long." });
+  }
+  if (roleInput !== "owner" && roleInput !== "clerk") {
+    return res.status(400).json({ success: false, error: "Role must be Owner or Clerk." });
   }
 
   const { url, key } = getSupabaseConfig();
   const hashedPassword = await hashPassword(password);
-  const newUser = {
-    username: rawUser,
-    password: hashedPassword,
-    role: rawRole,
-    created_at: new Date().toISOString()
-  };
 
-  // 1. Try posting to Supabase users table
   try {
-    await fetch(`${url}/rest/v1/users`, {
+    const response = await fetch(`${url}/rest/v1/users`, {
       method: "POST",
       headers: {
         apikey: key,
@@ -590,71 +500,60 @@ app.post("/api/users", userMutationLimiter, requireOwner, async (req: Request, r
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify(newUser)
+      body: JSON.stringify({
+        username,
+        password: hashedPassword,
+        role: roleInput === "owner" ? "Owner" : "Clerk",
+        created_at: new Date().toISOString()
+      })
     });
-  } catch (err) {
-    console.warn("[USERS] Insert into Supabase notice:", err);
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Failed to create user." });
+    }
+    const data = await response.json().catch(() => []);
+    auditLog((req as any).user.username, "CREATE_USER", username, "SUCCESS", { role: roleInput });
+    return res.status(201).json({ success: true, message: `User '${username}' registered successfully.`, user: Array.isArray(data) ? data[0] : data });
+  } catch {
+    return res.status(503).json({ success: false, error: "User service is temporarily unavailable." });
   }
-
-  // 2. Cache in memory store and persist to users.json disk file
-  const createdObj: PersistedUser = {
-    id: `user-${Date.now()}`,
-    username: rawUser,
-    passwordHash: hashedPassword,
-    role: rawRole,
-    created_at: newUser.created_at
-  };
-
-  const existingIdx = MEMORY_USERS.findIndex(u => u.username.toLowerCase() === rawUser.toLowerCase());
-  if (existingIdx !== -1) {
-    MEMORY_USERS[existingIdx] = createdObj;
-  } else {
-    MEMORY_USERS.push(createdObj);
-  }
-
-  // Persist created/updated users (excluding bootstrap seed entries)
-  savePersistedUsers(MEMORY_USERS.filter(u => !u.id.startsWith("seed-") && !u.id.startsWith("env-")));
-
-  auditLog((req as any).user.username, "CREATE_USER", rawUser, "SUCCESS", { role: rawRole });
-  return res.json({ success: true, message: `User '${rawUser}' registered successfully.` });
 });
 
 app.put("/api/users/:identifier", userMutationLimiter, requireOwner, async (req: Request, res: Response) => {
-  const { identifier } = req.params;
-  const { role, username } = req.body;
-  const targetIdStr = String(identifier || "").trim();
-  const password = typeof req.body.password === "string" ? req.body.password : undefined;
-  const rawRole = role ? (String(role).trim().toLowerCase() === "clerk" ? "Clerk" : "Owner") : undefined;
-  const newUsername = username ? String(username).trim() : undefined;
+  const identifier = String(req.params.identifier || "").trim();
+  if (!identifier) return res.status(400).json({ success: false, error: "User identifier is required." });
 
-  if (password === undefined && !rawRole && !newUsername) {
-    return res.status(400).json({ success: false, error: "No fields provided to update." });
-  }
+  const password = req.body?.password !== undefined
+    ? (typeof req.body.password === "string" ? req.body.password : "")
+    : undefined;
+  const username = req.body?.username !== undefined ? String(req.body.username).trim() : undefined;
+  const role = req.body?.role !== undefined ? String(req.body.role).trim().toLowerCase() : undefined;
 
   if (password !== undefined && password.length < 6) {
     return res.status(400).json({ success: false, error: "Password must be at least 6 characters long." });
   }
+  if (username !== undefined && !/^[a-zA-Z0-9_.-]{3,50}$/.test(username)) {
+    return res.status(400).json({ success: false, error: "Username must be 3-50 characters using letters, numbers, _, . or -." });
+  }
+  if (role !== undefined && role !== "owner" && role !== "clerk") {
+    return res.status(400).json({ success: false, error: "Role must be Owner or Clerk." });
+  }
 
-  if (newUsername && (newUsername.length < 3 || newUsername.length > 50 || !/^[a-zA-Z0-9_.-]+$/.test(newUsername))) {
-    return res.status(400).json({ success: false, error: "Username must be 3-50 alphanumeric characters (or _ . -)." });
+  const updatePayload: Record<string, string> = {};
+  if (password !== undefined) updatePayload.password = await hashPassword(password);
+  if (username !== undefined) updatePayload.username = username;
+  if (role !== undefined) updatePayload.role = role === "owner" ? "Owner" : "Clerk";
+  if (Object.keys(updatePayload).length === 0) {
+    return res.status(400).json({ success: false, error: "No supported fields provided for update." });
   }
 
   const { url, key } = getSupabaseConfig();
-  const updatePayload: Record<string, any> = {};
-  if (password !== undefined) updatePayload.password = await hashPassword(password);
-  if (rawRole) updatePayload.role = rawRole;
-  if (newUsername) updatePayload.username = newUsername;
+  const filter = /^\d+$/.test(identifier)
+    ? `id=eq.${encodeURIComponent(identifier)}`
+    : `username=eq.${encodeURIComponent(identifier)}`;
 
-  // 1. Try updating in Supabase
   try {
-    const isNumeric = /^\d+$/.test(targetIdStr);
-    let supabaseUrl = "";
-    if (isNumeric) {
-      supabaseUrl = `${url}/rest/v1/users?or=(id.eq.${encodeURIComponent(targetIdStr)},username.eq.${encodeURIComponent(targetIdStr)})`;
-    } else {
-      supabaseUrl = `${url}/rest/v1/users?username.eq.${encodeURIComponent(targetIdStr)}`;
-    }
-    await fetch(supabaseUrl, {
+    const response = await fetch(`${url}/rest/v1/users?${filter}`, {
       method: "PATCH",
       headers: {
         apikey: key,
@@ -664,74 +563,60 @@ app.put("/api/users/:identifier", userMutationLimiter, requireOwner, async (req:
       },
       body: JSON.stringify(updatePayload)
     });
-  } catch (err) {
-    console.warn("[USERS] Supabase update user notice:", err);
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Failed to update user." });
+    }
+    const data = await response.json().catch(() => []);
+    if (!Array.isArray(data) || data.length === 0) {
+      return res.status(404).json({ success: false, error: "User not found." });
+    }
+    auditLog((req as any).user.username, "UPDATE_USER", identifier, "SUCCESS");
+    return res.json({ success: true, message: "User updated successfully.", user: data[0] });
+  } catch {
+    return res.status(503).json({ success: false, error: "User service is temporarily unavailable." });
   }
-
-  // 2. Update memory cache and disk store
-  const idx = MEMORY_USERS.findIndex(u => String(u.id).toLowerCase() === targetIdStr.toLowerCase() || u.username.toLowerCase() === targetIdStr.toLowerCase());
-  if (idx !== -1) {
-    if (updatePayload.password) MEMORY_USERS[idx].passwordHash = updatePayload.password;
-    if (rawRole) MEMORY_USERS[idx].role = rawRole;
-    if (newUsername) MEMORY_USERS[idx].username = newUsername;
-    savePersistedUsers(MEMORY_USERS.filter(u => !u.id.startsWith("seed-") && !u.id.startsWith("env-")));
-  }
-
-  auditLog((req as any).user.username, "UPDATE_USER", targetIdStr, "SUCCESS", { role: rawRole, updatedUsername: !!newUsername, updatedPassword: password !== undefined });
-  return res.json({ success: true, message: `User '${newUsername || targetIdStr}' updated successfully.` });
 });
 
 app.delete("/api/users/:identifier", requireOwner, async (req: Request, res: Response) => {
-  const { identifier } = req.params;
-  const requestingUser = (req as any).user?.username || (req as any).user?.user || "";
-  const targetIdStr = String(identifier || "").trim().toLowerCase();
-  const reqUserStr = String(requestingUser || "").trim().toLowerCase();
+  const identifier = String(req.params.identifier || "").trim();
+  const actor = String((req as any).user?.username || "").trim().toLowerCase();
 
-  // SELF-LOCKOUT PREVENTION CHECK
-  if (targetIdStr && (targetIdStr === reqUserStr || targetIdStr === "admin" && reqUserStr === "admin")) {
-    return res.status(400).json({
-      success: false,
-      error: "Self-lockout prevented: You cannot delete your own currently logged-in account."
-    });
+  if (!identifier) return res.status(400).json({ success: false, error: "User identifier is required." });
+  if (identifier.toLowerCase() === actor) {
+    return res.status(400).json({ success: false, error: "Self-lockout prevented: You cannot delete your own account." });
   }
 
   const { url, key } = getSupabaseConfig();
+  const filter = /^\d+$/.test(identifier)
+    ? `id=eq.${encodeURIComponent(identifier)}`
+    : `username=eq.${encodeURIComponent(identifier)}`;
 
-  // 1. Try deleting from Supabase
   try {
-    const isNumeric = /^\d+$/.test(identifier);
-    let supabaseUrl = "";
-    if (isNumeric) {
-      supabaseUrl = `${url}/rest/v1/users?or=(id.eq.${encodeURIComponent(identifier)},username.eq.${encodeURIComponent(identifier)})`;
-    } else {
-      supabaseUrl = `${url}/rest/v1/users?username.eq.${encodeURIComponent(identifier)}`;
-    }
-    await fetch(supabaseUrl, {
+    const response = await fetch(`${url}/rest/v1/users?${filter}`, {
       method: "DELETE",
-      headers: { apikey: key, Authorization: `Bearer ${key}` }
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        Prefer: "return=representation"
+      }
     });
-  } catch (err) {
-    console.warn("[USERS] Delete from Supabase notice:", err);
-  }
-
-  // 2. Remove from memory cache and disk store
-  const idx = MEMORY_USERS.findIndex(u => String(u.id).toLowerCase() === targetIdStr || u.username.toLowerCase() === targetIdStr);
-  if (idx !== -1) {
-    if (MEMORY_USERS[idx].username.toLowerCase() === reqUserStr) {
-      return res.status(400).json({
-        success: false,
-        error: "Self-lockout prevented: You cannot delete your own currently logged-in account."
-      });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.status(response.status).json({ success: false, error: errText || "Failed to delete user." });
     }
-    MEMORY_USERS.splice(idx, 1);
-    savePersistedUsers(MEMORY_USERS.filter(u => !u.id.startsWith("seed-") && !u.id.startsWith("env-")));
+    const data = await response.json().catch(() => []);
+    if (!Array.isArray(data) || data.length === 0) {
+      return res.status(404).json({ success: false, error: "User not found." });
+    }
+    auditLog(actor, "DELETE_USER", identifier, "SUCCESS");
+    return res.json({ success: true, message: `User '${identifier}' deleted successfully.` });
+  } catch {
+    return res.status(503).json({ success: false, error: "User service is temporarily unavailable." });
   }
-
-  console.log(`[USERS] Deleted user '${identifier}' by admin '${requestingUser}'`);
-  return res.json({ success: true, message: `User '${identifier}' deleted successfully.` });
 });
 
-// 0.1 Settings & Dynamic Supabase Configuration (Owner Only)
+// 0.1 Settings// 0.1 Settings & Dynamic Supabase Configuration (Owner Only)
 app.get("/api/settings", requireOwner, (_req: Request, res: Response) => {
   const cfg = readConfigJson();
   return res.json({
